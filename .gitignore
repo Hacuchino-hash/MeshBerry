@@ -1,0 +1,147 @@
+# MeshBerry .gitignore
+
+# =============================================================================
+# BUILD OUTPUTS - Exclude from repository
+# =============================================================================
+
+# PlatformIO build directories
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Build output
+build/
+out/
+bin/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Object files
+*.o
+*.obj
+
+# =============================================================================
+# IDE AND EDITOR FILES
+# =============================================================================
+
+# VSCode
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# Eclipse
+.project
+.cproject
+.settings/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# =============================================================================
+# DEPENDENCIES
+# =============================================================================
+
+# Node modules (if using any JS tooling)
+node_modules/
+
+# Python virtual environments
+venv/
+env/
+.venv/
+
+# =============================================================================
+# SECRETS AND LOCAL CONFIG
+# =============================================================================
+
+# Environment files
+.env
+.env.local
+*.local
+
+# Credentials
+credentials.json
+secrets.json
+*.pem
+*.key
+
+# =============================================================================
+# LOGS AND TEMPORARY FILES
+# =============================================================================
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Cache
+*.cache
+.cache/
+__pycache__/
+*.pyc
+
+# =============================================================================
+# FIRMWARE COMPILATION EXCLUSIONS
+# =============================================================================
+# The dev-docs/ directory IS tracked in git but should NOT be included
+# in firmware compilation. This is handled by the build system, not .gitignore.
+#
+# DO NOT add dev-docs/ to .gitignore - it must be version controlled!
+#
+# Instead, ensure your platformio.ini or build configuration excludes:
+#   - dev-docs/
+#   - Any other documentation directories
+#
+# Example platformio.ini configuration:
+#   [env:tdeck]
+#   build_src_filter = +<*> -<../dev-docs/>
+# =============================================================================
+
+# =============================================================================
+# TEST AND COVERAGE
+# =============================================================================
+
+# Test output
+test-results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# =============================================================================
+# BACKUP FILES
+# =============================================================================
+
+*.bak
+*.backup
+*.orig
