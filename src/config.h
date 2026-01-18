@@ -65,28 +65,35 @@
 
 // =============================================================================
 // LORA RADIO - Semtech SX1262
+// Pin definitions verified from MeshCore lilygo_tdeck variant
 // =============================================================================
 
-#define PIN_LORA_MOSI   35
-#define PIN_LORA_MISO   37
-#define PIN_LORA_SCK    36
-#define PIN_LORA_CS     39
-#define PIN_LORA_RST    17
-#define PIN_LORA_BUSY   13
-#define PIN_LORA_DIO1   45      // Interrupt pin
+#define PIN_LORA_MOSI   41      // LoRa MOSI (shared SPI bus)
+#define PIN_LORA_MISO   38      // LoRa MISO
+#define PIN_LORA_SCK    40      // LoRa SCLK (shared SPI bus)
+#define PIN_LORA_CS     9       // LoRa NSS/CS
+#define PIN_LORA_RST    17      // LoRa RESET
+#define PIN_LORA_BUSY   13      // LoRa BUSY
+#define PIN_LORA_DIO1   45      // LoRa DIO1 interrupt pin
 
 // LoRa SPI settings
 #define LORA_SPI_FREQ   8000000 // 8MHz
 
-// Default LoRa settings (can be changed at runtime)
+// SX1262 specific settings (from MeshCore)
+#define SX126X_DIO2_AS_RF_SWITCH    false
+#define SX126X_DIO3_TCXO_VOLTAGE    1.8f
+#define SX126X_CURRENT_LIMIT        140     // mA
+#define SX126X_RX_BOOSTED_GAIN      true
+
+// Default LoRa settings (MeshCore compatible defaults)
 #define LORA_FREQUENCY_US   915.0   // MHz - US ISM band
 #define LORA_FREQUENCY_EU   868.0   // MHz - EU ISM band
 #define LORA_FREQUENCY_433  433.0   // MHz - 433 ISM band
-#define LORA_BANDWIDTH      125.0   // kHz
-#define LORA_SPREADING_FACTOR 12
-#define LORA_CODING_RATE    8       // 4/8
+#define LORA_BANDWIDTH      250.0   // kHz (MeshCore default)
+#define LORA_SPREADING_FACTOR 10    // SF10 (MeshCore default)
+#define LORA_CODING_RATE    5       // 4/5 (MeshCore default)
 #define LORA_TX_POWER       22      // dBm (max for SX1262)
-#define LORA_PREAMBLE_LEN   8
+#define LORA_PREAMBLE_LEN   16      // symbols
 
 // =============================================================================
 // GPS - u-blox MIA-M10Q (T-Deck Plus only, runtime detected)
@@ -136,13 +143,19 @@
 #define BATTERY_VOLTAGE_EMPTY   3.0     // 0% charge
 
 // =============================================================================
+// PERIPHERAL POWER CONTROL
+// =============================================================================
+
+#define PIN_PERIPHERAL_POWER    10  // Controls power to peripherals (LoRa, etc.)
+
+// =============================================================================
 // SD CARD
 // =============================================================================
 
-#define PIN_SD_MOSI     41      // Shared with display
-#define PIN_SD_MISO     38
-#define PIN_SD_SCK      40      // Shared with display
-#define PIN_SD_CS       39
+#define PIN_SD_MOSI     41      // Shared with display/LoRa SPI bus
+#define PIN_SD_MISO     38      // Shared with LoRa
+#define PIN_SD_SCK      40      // Shared with display/LoRa SPI bus
+#define PIN_SD_CS       39      // SD card chip select
 
 // =============================================================================
 // POWER MANAGEMENT
