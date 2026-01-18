@@ -73,6 +73,12 @@ bool gpsPresent = false;
 static uint32_t lastAdvertTime = 0;
 static const uint32_t ADVERT_INTERVAL_MS = 300000;  // 5 minutes
 
+// Input test state
+static char inputBuffer[64] = "";
+static int inputPos = 0;
+static int trackballX = 160;  // Center of 320 width
+static int trackballY = 120;  // Center of 240 height
+
 // =============================================================================
 // FORWARD DECLARATIONS
 // =============================================================================
@@ -82,6 +88,7 @@ bool initRadio();
 bool initMesh();
 void showBootScreen();
 void showStatusScreen();
+void showInputTestScreen();
 void handleInput();
 void onMessageReceived(const Message& msg);
 void onNodeDiscovered(const NodeInfo& node);
@@ -121,8 +128,8 @@ void setup() {
         }
     }
 
-    // Show boot complete screen
-    showStatusScreen();
+    // Show input test screen for keyboard/trackball testing
+    showInputTestScreen();
 
     Serial.println();
     Serial.println("[BOOT] MeshBerry ready!");
@@ -166,6 +173,18 @@ void initHardware() {
     // Initialize I2C for keyboard and other peripherals
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);
     Serial.println("[INIT] I2C bus initialized");
+
+    // I2C Scanner - debug to find devices
+    Serial.println("[I2C] Scanning for devices...");
+    int foundDevices = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("[I2C] Device found at 0x%02X\n", addr);
+            foundDevices++;
+        }
+    }
+    Serial.printf("[I2C] Scan complete. Found %d device(s)\n", foundDevices);
 
     // Initialize display FIRST - before any other SPI users
     if (Display::init()) {
@@ -313,30 +332,107 @@ void showStatusScreen() {
     Display::drawText(10, 180, "Press any key to continue", COLOR_WARNING, 1);
 }
 
+void showInputTestScreen() {
+    Display::clear(COLOR_BACKGROUND);
+    Display::drawText(10, 10, "Input Test Mode", COLOR_ACCENT, 2);
+    Display::drawText(10, 40, "Type on keyboard:", COLOR_TEXT, 1);
+
+    // Draw input buffer area
+    Display::drawRect(10, 60, 300, 30, COLOR_TEXT);
+    Display::drawText(15, 68, inputBuffer, COLOR_ACCENT, 1);
+
+    // Draw trackball position indicator
+    Display::drawText(10, 100, "Trackball: Move to test", COLOR_TEXT, 1);
+
+    // Draw cursor position
+    Display::fillRect(trackballX - 5, trackballY - 5, 10, 10, COLOR_ACCENT);
+
+    // Instructions
+    Display::drawText(10, 200, "ESC=Status  CLICK=Clear", COLOR_WARNING, 1);
+}
+
 void handleInput() {
-    // Handle keyboard
-    if (Keyboard::available()) {
-        uint8_t key = Keyboard::read();
+    static bool needsRedraw = false;
+
+    // Handle keyboard - poll directly
+    uint8_t key = Keyboard::read();
+    if (key != KEY_NONE) {
         char c = Keyboard::getChar(key);
 
-        if (c != 0) {
-            Serial.printf("[INPUT] Key: '%c' (0x%02X)\n", c, key);
+        Serial.printf("[INPUT] Key code: 0x%02X, char: '%c'\n", key, c ? c : '?');
 
-            // Handle special keys
-            if (key == KEY_ESC) {
-                showStatusScreen();
-            }
+        if (key == KEY_ESC) {
+            showStatusScreen();
+            return;
+        } else if (c == '\b' && inputPos > 0) {
+            // Backspace
+            inputBuffer[--inputPos] = '\0';
+            needsRedraw = true;
+        } else if (c == '\n') {
+            // Enter - clear buffer
+            inputBuffer[0] = '\0';
+            inputPos = 0;
+            needsRedraw = true;
+        } else if (c >= 32 && c < 127 && inputPos < 62) {
+            // Printable character
+            inputBuffer[inputPos++] = c;
+            inputBuffer[inputPos] = '\0';
+            needsRedraw = true;
         }
     }
 
-    // Handle trackball (basic example)
+    // Handle trackball movement
+    static bool prevUp = true, prevDown = true, prevLeft = true, prevRight = true;
+    bool up = digitalRead(PIN_TRACKBALL_UP);
+    bool down = digitalRead(PIN_TRACKBALL_DOWN);
+    bool left = digitalRead(PIN_TRACKBALL_LEFT);
+    bool right = digitalRead(PIN_TRACKBALL_RIGHT);
+
+    if (!up && prevUp) {
+        trackballY = max(10, trackballY - 5);
+        Serial.println("[INPUT] Trackball UP");
+        needsRedraw = true;
+    }
+    if (!down && prevDown) {
+        trackballY = min(230, trackballY + 5);
+        Serial.println("[INPUT] Trackball DOWN");
+        needsRedraw = true;
+    }
+    if (!left && prevLeft) {
+        trackballX = max(10, trackballX - 5);
+        Serial.println("[INPUT] Trackball LEFT");
+        needsRedraw = true;
+    }
+    if (!right && prevRight) {
+        trackballX = min(310, trackballX + 5);
+        Serial.println("[INPUT] Trackball RIGHT");
+        needsRedraw = true;
+    }
+
+    prevUp = up;
+    prevDown = down;
+    prevLeft = left;
+    prevRight = right;
+
+    // Handle trackball click
     static bool prevClick = true;
     bool click = digitalRead(PIN_TRACKBALL_CLICK);
     if (!click && prevClick) {
-        Serial.println("[INPUT] Trackball click");
-        showStatusScreen();
+        Serial.println("[INPUT] Trackball CLICK");
+        // Reset cursor to center and clear input
+        trackballX = 160;
+        trackballY = 120;
+        inputBuffer[0] = '\0';
+        inputPos = 0;
+        needsRedraw = true;
     }
     prevClick = click;
+
+    // Redraw if needed
+    if (needsRedraw) {
+        showInputTestScreen();
+        needsRedraw = false;
+    }
 }
 
 // =============================================================================

@@ -59,28 +59,21 @@ bool init() {
 }
 
 bool available() {
-    if (!keyboardInitialized) return false;
-
-    // Check if there's data available from keyboard
-    Wire.requestFrom((uint8_t)KB_I2C_ADDR, (uint8_t)1);
-    if (Wire.available()) {
-        uint8_t key = Wire.peek();
-        return (key != KEY_NONE);
-    }
-    return false;
+    // T-Deck keyboard: just try to read - returns 0 if no key
+    // We always return true and let read() handle the actual check
+    return keyboardInitialized;
 }
 
 uint8_t read() {
     if (!keyboardInitialized) return KEY_NONE;
 
-    // Read key from register 0x00
-    Wire.beginTransmission(KB_I2C_ADDR);
-    Wire.write(KB_REG_READ);
-    Wire.endTransmission(false);
-
+    // T-Deck keyboard: simple direct read (no register select needed)
     Wire.requestFrom((uint8_t)KB_I2C_ADDR, (uint8_t)1);
     if (Wire.available()) {
         uint8_t key = Wire.read();
+
+        // Return 0 (KEY_NONE) if no key pressed
+        if (key == KEY_NONE) return KEY_NONE;
 
         // Track modifier state
         if (key == KEY_SHIFT) {
@@ -90,12 +83,6 @@ uint8_t read() {
         if (key == KEY_ALT) {
             altPressed = !altPressed;
             return KEY_ALT;
-        }
-
-        // Reset modifiers after regular key press
-        if (key != KEY_NONE && key != KEY_SHIFT && key != KEY_ALT) {
-            // Keep modifiers for one key
-            // They'll be reset after getChar() is called
         }
 
         return key;
