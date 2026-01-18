@@ -2,6 +2,8 @@
 
 Open-source firmware for LILYGO T-Deck series handheld LoRa communicators.
 
+A project by [NodakMesh](https://nodakmesh.org)
+
 ## Overview
 
 MeshBerry transforms the T-Deck into an off-grid messaging device with a modern, smartphone-like user experience. It leverages the MeshCore mesh networking protocol for long-range, decentralized communication.
@@ -43,3 +45,7 @@ See [dev-docs/CONTRIBUTING.md](dev-docs/CONTRIBUTING.md) for contribution guidel
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
+
+---
+
+**MeshBerry** is a [NodakMesh](https://nodakmesh.org) project.
