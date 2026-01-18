@@ -1,0 +1,29 @@
+
+MeshBerry - lib directory
+=========================
+
+This directory is intended for project-specific (private) libraries.
+PlatformIO will compile them into a static library and link into the executable.
+
+The source code of each library should be placed in a separate directory:
+
+|--lib
+|  |
+|  |--CustomLibrary
+|  |  |--src
+|  |  |  |- CustomLibrary.cpp
+|  |  |  |- CustomLibrary.h
+|  |  |--library.json (optional)
+|  |
+|  |--README (this file)
+
+More information:
+https://docs.platformio.org/page/librarymanager/ldf.html
+
+External libraries are managed via platformio.ini lib_deps:
+- TFT_eSPI (display driver)
+- RadioLib (LoRa SX1262)
+- TinyGPSPlus (GPS NMEA parsing)
+- ArduinoJson (configuration files)
+
+Place any custom MeshBerry libraries here (e.g., mesh protocol wrappers).

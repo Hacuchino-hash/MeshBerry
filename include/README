@@ -1,0 +1,23 @@
+
+MeshBerry - include directory
+=============================
+
+This directory is intended for project header files.
+
+Use for global headers that should be accessible from any source file.
+
+Example structure:
+
+|--include
+|  |--version.h         (version constants)
+|  |--features.h        (feature flags)
+|  |--README (this file)
+
+Most headers should live in src/ alongside their implementations:
+- src/config.h          (pin definitions and constants)
+- src/drivers/*.h       (hardware driver interfaces)
+- src/mesh/*.h          (mesh protocol headers)
+- src/ui/*.h            (user interface headers)
+
+More information:
+https://docs.platformio.org/page/projectconf/section_env_build.html
