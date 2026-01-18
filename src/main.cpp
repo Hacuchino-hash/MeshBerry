@@ -56,8 +56,8 @@
 // Board
 TDeckBoard board;
 
-// SPI and radio
-static SPIClass radioSPI(HSPI);
+// SPI and radio - use pointers to avoid static initialization conflicts with display
+static SPIClass* radioSPI = nullptr;
 static CustomSX1262* radio = nullptr;
 static MeshBerrySX1262Wrapper* radioWrapper = nullptr;
 
@@ -167,7 +167,7 @@ void initHardware() {
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);
     Serial.println("[INIT] I2C bus initialized");
 
-    // Initialize display
+    // Initialize display FIRST - before any other SPI users
     if (Display::init()) {
         showBootScreen();
     }
@@ -208,15 +208,16 @@ void initHardware() {
 bool initRadio() {
     Serial.println("[INIT] Initializing SX1262 radio...");
 
-    // Initialize SPI for radio
-    radioSPI.begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI);
+    // Create SPI instance for radio (after display init to avoid conflicts)
+    radioSPI = new SPIClass(HSPI);
+    radioSPI->begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI);
 
     // Create radio instance
-    Module* mod = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RST, PIN_LORA_BUSY, radioSPI);
+    Module* mod = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RST, PIN_LORA_BUSY, *radioSPI);
     radio = new CustomSX1262(mod);
 
     // Initialize radio with MeshCore-compatible settings
-    if (!radio->std_init(&radioSPI)) {
+    if (!radio->std_init(radioSPI)) {
         Serial.println("[INIT] Radio init FAILED");
         return false;
     }

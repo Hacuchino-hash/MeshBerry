@@ -147,6 +147,7 @@ void TDeckBoard::setPeripheralPower(bool enabled) {
 
     if (enabled) {
         // Give peripherals time to power up
-        delay(50);
+        // T-Deck needs longer delay for display controller to stabilize
+        delay(100);
     }
 }
