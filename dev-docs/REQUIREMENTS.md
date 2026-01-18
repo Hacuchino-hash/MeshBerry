@@ -1,8 +1,9 @@
 # MeshBerry Firmware Requirements Specification
 
 > **Target Device:** LILYGO T-Deck (with mini keyboard and trackball)
-> **License:** MIT
+> **License:** GPL-3.0-or-later
 > **Version:** 1.0.0-draft
+> **Copyright:** 2026 NodakMesh (nodakmesh.org)
 
 ---
 
@@ -18,7 +19,7 @@
 
 ## Project Overview
 
-MeshBerry is a new open-source firmware (MIT-licensed) for the LILYGO T-Deck series of handheld LoRa communicators. It is designed to transform the T-Deck into an off-grid messaging device with a modern, smartphone-like user experience – but without any paywalls or proprietary restrictions.
+MeshBerry is a new open-source firmware (GPL-3.0 licensed) for the LILYGO T-Deck series of handheld LoRa communicators. It is designed to transform the T-Deck into an off-grid messaging device with a modern, smartphone-like user experience – but without any paywalls or proprietary restrictions.
 
 MeshBerry will leverage the **MeshCore mesh networking protocol** to enable long-range, decentralized communication between devices, similar in spirit to Meshtastic or MeshOS, but fully open and free.
 
@@ -30,10 +31,12 @@ The firmware will incorporate all the key features of the existing MeshOS T-Deck
 
 ### Open Source & Licensing
 
-- Released under the **MIT License**
+- Released under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**
 - All code, schematics, and documentation will be open for the community
+- **Copyleft protection** – all derivative works must also be open source under GPL-3.0
 - **No feature paywalls** – every capability available to all users without fees
 - Development will be collaborative, welcoming contributions for improvements and translations
+- All source files must include the GPL license header (see LICENSE file for details)
 
 ### Hardware Target – T-Deck Series
 
@@ -474,13 +477,17 @@ Full-screen text terminal providing direct command-line access:
 
 ### External Libraries
 
-| Library | Purpose | License |
-|---------|---------|---------|
-| **MeshCore** | Mesh networking protocol | MIT |
-| **TFT_eSPI** or **LovyanGFX** | Display driver | MIT |
-| **LVGL** | GUI framework (optional) | MIT |
-| **RadioLib** | SX1262 driver (if needed) | MIT |
-| **TinyGPS++** | NMEA parsing | LGPL |
+All external libraries are GPL-3.0 compatible:
+
+| Library | Purpose | License | GPL-3.0 Compatible |
+|---------|---------|---------|-------------------|
+| **MeshCore** | Mesh networking protocol | MIT | Yes |
+| **TFT_eSPI** or **LovyanGFX** | Display driver | MIT | Yes |
+| **LVGL** | GUI framework (optional) | MIT | Yes |
+| **RadioLib** | SX1262 driver (if needed) | MIT | Yes |
+| **TinyGPS++** | NMEA parsing | LGPL | Yes |
+
+> **Note:** MIT and LGPL licenses are permissive and compatible with GPL-3.0. Any new dependencies must be verified for GPL-3.0 compatibility before integration.
 
 ### MeshCore Integration
 
