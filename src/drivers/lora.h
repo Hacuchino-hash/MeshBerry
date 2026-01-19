@@ -15,9 +15,10 @@
 
 #include <Arduino.h>
 #include "../config.h"
+#include "../settings/RadioSettings.h"
 
 // =============================================================================
-// LORA REGIONS
+// LORA REGIONS (legacy enum for backwards compatibility)
 // =============================================================================
 
 typedef enum {
@@ -150,6 +151,47 @@ void wake();
  * @param callback Function to call when packet received
  */
 void setReceiveCallback(void (*callback)(LoRaPacket_t& packet));
+
+// =============================================================================
+// RUNTIME SETTINGS FUNCTIONS
+// =============================================================================
+
+/**
+ * Initialize with RadioSettings structure
+ * @param settings Settings to apply
+ * @return true if successful
+ */
+bool initWithSettings(const RadioSettings& settings);
+
+/**
+ * Apply new RadioSettings at runtime
+ * @param settings Settings to apply
+ * @return true if successful
+ */
+bool applySettings(const RadioSettings& settings);
+
+/**
+ * Set frequency at runtime
+ * @param mhz Frequency in MHz
+ * @return true if successful
+ */
+bool setFrequencyMHz(float mhz);
+
+/**
+ * Set coding rate
+ * @param cr Coding rate (5-8, maps to 4/5 - 4/8)
+ * @return true if successful
+ */
+bool setCodingRate(uint8_t cr);
+
+/**
+ * Get current settings
+ */
+float getCurrentFrequency();
+float getCurrentBandwidth();
+uint8_t getCurrentSpreadingFactor();
+uint8_t getCurrentCodingRate();
+uint8_t getCurrentTxPower();
 
 } // namespace LoRa
 

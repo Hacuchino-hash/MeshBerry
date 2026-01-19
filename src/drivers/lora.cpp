@@ -38,6 +38,13 @@ static LoRaRegion_t currentRegion = LORA_REGION_US915;
 static bool radioInitialized = false;
 static void (*rxCallback)(LoRaPacket_t& packet) = nullptr;
 
+// Current settings (runtime modifiable)
+static float currentFrequency = 915.0f;
+static float currentBandwidth = 250.0f;
+static uint8_t currentSF = 10;
+static uint8_t currentCR = 5;
+static uint8_t currentTxPower = 22;
+
 // IRQ flag for async receive
 static volatile bool rxFlag = false;
 
@@ -73,9 +80,9 @@ bool init(LoRaRegion_t region) {
     // Using TCXO voltage 1.8V as per MeshCore T-Deck config
     int state = radio->begin(
         freq,                           // Frequency
-        LORA_BANDWIDTH,                 // Bandwidth (kHz)
-        LORA_SPREADING_FACTOR,          // Spreading factor
-        LORA_CODING_RATE,               // Coding rate
+        (float)LORA_BW,                 // Bandwidth (kHz)
+        LORA_SF,                        // Spreading factor
+        LORA_CR,                        // Coding rate
         RADIOLIB_SX126X_SYNC_WORD_PRIVATE, // Sync word
         LORA_TX_POWER,                  // TX power (dBm)
         LORA_PREAMBLE_LEN,              // Preamble length
@@ -86,7 +93,7 @@ bool init(LoRaRegion_t region) {
         // Try again without TCXO (some boards don't have it)
         Serial.println("[LORA] TCXO init failed, trying without...");
         state = radio->begin(
-            freq, LORA_BANDWIDTH, LORA_SPREADING_FACTOR, LORA_CODING_RATE,
+            freq, (float)LORA_BW, LORA_SF, LORA_CR,
             RADIOLIB_SX126X_SYNC_WORD_PRIVATE, LORA_TX_POWER, LORA_PREAMBLE_LEN, 0.0f
         );
     }
@@ -113,8 +120,8 @@ bool init(LoRaRegion_t region) {
     }
 
     radioInitialized = true;
-    Serial.printf("[LORA] Initialized at %.1f MHz, SF%d, BW%.0f kHz\n",
-                  freq, LORA_SPREADING_FACTOR, LORA_BANDWIDTH);
+    Serial.printf("[LORA] Initialized at %.1f MHz, SF%d, BW%d kHz\n",
+                  freq, LORA_SF, LORA_BW);
 
     return true;
 }
@@ -308,6 +315,205 @@ void wake() {
 
 void setReceiveCallback(void (*callback)(LoRaPacket_t& packet)) {
     rxCallback = callback;
+}
+
+// =============================================================================
+// RUNTIME SETTINGS FUNCTIONS
+// =============================================================================
+
+bool initWithSettings(const RadioSettings& settings) {
+    if (radioInitialized) {
+        return applySettings(settings);
+    }
+
+    Serial.println("[LORA] Initializing SX1262 with settings...");
+
+    // Initialize SPI for LoRa radio
+    loraSPI.begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI);
+
+    // Create RadioLib module
+    radioModule = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RST, PIN_LORA_BUSY, loraSPI);
+    radio = new SX1262(radioModule);
+
+    // Store settings
+    currentFrequency = settings.frequency;
+    currentBandwidth = settings.bandwidth;
+    currentSF = settings.spreadingFactor;
+    currentCR = settings.codingRate;
+    currentTxPower = settings.txPower;
+
+    // Initialize radio
+    int state = radio->begin(
+        currentFrequency,
+        currentBandwidth,
+        currentSF,
+        currentCR,
+        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
+        currentTxPower,
+        LORA_PREAMBLE_LEN,
+        SX126X_DIO3_TCXO_VOLTAGE
+    );
+
+    if (state == RADIOLIB_ERR_SPI_CMD_FAILED || state == RADIOLIB_ERR_SPI_CMD_INVALID) {
+        Serial.println("[LORA] TCXO init failed, trying without...");
+        state = radio->begin(
+            currentFrequency, currentBandwidth, currentSF, currentCR,
+            RADIOLIB_SX126X_SYNC_WORD_PRIVATE, currentTxPower, LORA_PREAMBLE_LEN, 0.0f
+        );
+    }
+
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Init failed with error: %d\n", state);
+        return false;
+    }
+
+    // Apply MeshCore-recommended settings
+    radio->setCRC(1);
+    radio->setCurrentLimit(SX126X_CURRENT_LIMIT);
+    radio->setDio2AsRfSwitch(SX126X_DIO2_AS_RF_SWITCH);
+    radio->setRxBoostedGainMode(SX126X_RX_BOOSTED_GAIN);
+
+    // Set up DIO1 interrupt for receive
+    radio->setPacketReceivedAction(onDio1Rise);
+
+    // Start receiving
+    state = radio->startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Failed to start receive: %d\n", state);
+        return false;
+    }
+
+    radioInitialized = true;
+    Serial.printf("[LORA] Initialized: %.3f MHz, SF%d, BW%.0f kHz, CR 4/%d, TX %d dBm\n",
+                  currentFrequency, currentSF, currentBandwidth, currentCR, currentTxPower);
+
+    return true;
+}
+
+bool applySettings(const RadioSettings& settings) {
+    if (!radioInitialized) {
+        return initWithSettings(settings);
+    }
+
+    Serial.println("[LORA] Applying new settings...");
+
+    // Stop receiving during reconfiguration
+    radio->standby();
+
+    bool success = true;
+
+    // Apply frequency
+    if (settings.frequency != currentFrequency) {
+        int state = radio->setFrequency(settings.frequency);
+        if (state == RADIOLIB_ERR_NONE) {
+            currentFrequency = settings.frequency;
+        } else {
+            Serial.printf("[LORA] Failed to set frequency: %d\n", state);
+            success = false;
+        }
+    }
+
+    // Apply bandwidth
+    if (settings.bandwidth != currentBandwidth) {
+        int state = radio->setBandwidth(settings.bandwidth);
+        if (state == RADIOLIB_ERR_NONE) {
+            currentBandwidth = settings.bandwidth;
+        } else {
+            Serial.printf("[LORA] Failed to set bandwidth: %d\n", state);
+            success = false;
+        }
+    }
+
+    // Apply spreading factor
+    if (settings.spreadingFactor != currentSF) {
+        int state = radio->setSpreadingFactor(settings.spreadingFactor);
+        if (state == RADIOLIB_ERR_NONE) {
+            currentSF = settings.spreadingFactor;
+        } else {
+            Serial.printf("[LORA] Failed to set SF: %d\n", state);
+            success = false;
+        }
+    }
+
+    // Apply coding rate
+    if (settings.codingRate != currentCR) {
+        int state = radio->setCodingRate(settings.codingRate);
+        if (state == RADIOLIB_ERR_NONE) {
+            currentCR = settings.codingRate;
+        } else {
+            Serial.printf("[LORA] Failed to set CR: %d\n", state);
+            success = false;
+        }
+    }
+
+    // Apply TX power
+    if (settings.txPower != currentTxPower) {
+        int state = radio->setOutputPower(settings.txPower);
+        if (state == RADIOLIB_ERR_NONE) {
+            currentTxPower = settings.txPower;
+        } else {
+            Serial.printf("[LORA] Failed to set TX power: %d\n", state);
+            success = false;
+        }
+    }
+
+    // Resume receiving
+    radio->startReceive();
+
+    Serial.printf("[LORA] Settings applied: %.3f MHz, SF%d, BW%.0f kHz, CR 4/%d, TX %d dBm\n",
+                  currentFrequency, currentSF, currentBandwidth, currentCR, currentTxPower);
+
+    return success;
+}
+
+bool setFrequencyMHz(float mhz) {
+    if (!radioInitialized) return false;
+    if (mhz < 137.0f || mhz > 1020.0f) return false;
+
+    radio->standby();
+    int state = radio->setFrequency(mhz);
+    radio->startReceive();
+
+    if (state == RADIOLIB_ERR_NONE) {
+        currentFrequency = mhz;
+        return true;
+    }
+    return false;
+}
+
+bool setCodingRate(uint8_t cr) {
+    if (!radioInitialized) return false;
+    if (cr < 5 || cr > 8) return false;
+
+    radio->standby();
+    int state = radio->setCodingRate(cr);
+    radio->startReceive();
+
+    if (state == RADIOLIB_ERR_NONE) {
+        currentCR = cr;
+        return true;
+    }
+    return false;
+}
+
+float getCurrentFrequency() {
+    return currentFrequency;
+}
+
+float getCurrentBandwidth() {
+    return currentBandwidth;
+}
+
+uint8_t getCurrentSpreadingFactor() {
+    return currentSF;
+}
+
+uint8_t getCurrentCodingRate() {
+    return currentCR;
+}
+
+uint8_t getCurrentTxPower() {
+    return currentTxPower;
 }
 
 } // namespace LoRa

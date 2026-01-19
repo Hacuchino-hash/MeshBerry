@@ -53,7 +53,12 @@ private:
     uint32_t _epoch_offset;
 
 public:
-    ESP32RTCClock() : _epoch_offset(0) {}
+    ESP32RTCClock() {
+        // Set a reasonable default epoch (Jan 1, 2025 = 1735689600)
+        // This ensures timestamps are plausible even before syncing from advertisements
+        // The exact time will be synced from received advertisements
+        _epoch_offset = 1735689600;
+    }
 
     void begin() {
         // Could sync with NTP or GPS here
@@ -81,11 +86,23 @@ public:
 };
 
 /**
+ * Node types (from MeshCore AdvertDataHelpers.h)
+ */
+enum NodeType : uint8_t {
+    NODE_TYPE_UNKNOWN = 0,
+    NODE_TYPE_CHAT = 1,      // Regular chat client
+    NODE_TYPE_REPEATER = 2,  // Repeater/relay node
+    NODE_TYPE_ROOM = 3,      // Room server (bulletin board)
+    NODE_TYPE_SENSOR = 4     // Sensor node
+};
+
+/**
  * Node information structure
  */
 struct NodeInfo {
     uint32_t id;
     char name[32];
+    NodeType type;           // Node type from advertisement
     int16_t rssi;
     float snr;
     uint32_t lastHeard;
@@ -130,6 +147,14 @@ public:
      * @return true if queued for send
      */
     bool sendBroadcast(const char* text);
+
+    /**
+     * Send a text message to a specific channel
+     * @param channelIdx Channel index from ChannelSettings
+     * @param text Message text
+     * @return true if queued for send
+     */
+    bool sendToChannel(int channelIdx, const char* text);
 
     /**
      * Send advertisement packet
@@ -186,6 +211,80 @@ public:
      */
     void setNodeCallback(NodeCallback cb) { _nodeCallback = cb; }
 
+    /**
+     * Enable or disable packet forwarding (repeater mode)
+     */
+    void setForwardingEnabled(bool enabled) { _forwardingEnabled = enabled; }
+
+    /**
+     * Check if forwarding is enabled
+     */
+    bool isForwardingEnabled() const { return _forwardingEnabled; }
+
+    // =========================================================================
+    // REPEATER MANAGEMENT
+    // =========================================================================
+
+    /**
+     * Callback type for login response
+     * @param success True if login succeeded
+     * @param permissions Permission level (0=guest, 3=admin)
+     * @param repeaterName Name of connected repeater
+     */
+    typedef void (*LoginCallback)(bool success, uint8_t permissions, const char* repeaterName);
+
+    /**
+     * Callback type for CLI response
+     * @param response The response text from the repeater
+     */
+    typedef void (*CLIResponseCallback)(const char* response);
+
+    /**
+     * Set login callback
+     */
+    void setLoginCallback(LoginCallback cb) { _loginCallback = cb; }
+
+    /**
+     * Set CLI response callback
+     */
+    void setCLIResponseCallback(CLIResponseCallback cb) { _cliCallback = cb; }
+
+    /**
+     * Send login request to a repeater
+     * @param repeaterId Node ID of the repeater
+     * @param repeaterPubKey Public key of the repeater (32 bytes)
+     * @param password Admin or guest password
+     * @return true if packet was queued for send
+     */
+    bool sendRepeaterLogin(uint32_t repeaterId, const uint8_t* repeaterPubKey, const char* password);
+
+    /**
+     * Send CLI command to connected repeater
+     * @param command The CLI command to send
+     * @return true if packet was queued for send
+     */
+    bool sendRepeaterCommand(const char* command);
+
+    /**
+     * Disconnect from current repeater
+     */
+    void disconnectRepeater();
+
+    /**
+     * Check if connected to a repeater
+     */
+    bool isRepeaterConnected() const { return _repeaterConnected; }
+
+    /**
+     * Get connected repeater name
+     */
+    const char* getConnectedRepeaterName() const { return _connectedRepeaterName; }
+
+    /**
+     * Get connected repeater permissions
+     */
+    uint8_t getRepeaterPermissions() const { return _repeaterPermissions; }
+
 protected:
     // MeshCore virtual method overrides
     void onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id,
@@ -195,6 +294,19 @@ protected:
                         const mesh::Identity& sender, uint8_t* data, size_t len) override;
 
     void onAckRecv(mesh::Packet* packet, uint32_t ack_crc) override;
+
+    // Channel message handling overrides
+    int searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) override;
+    void onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) override;
+
+    // Enable packet forwarding for mesh relay
+    bool allowPacketForward(const mesh::Packet* packet) override;
+
+    // Peer data handling for CLI responses
+    int searchPeersByHash(const uint8_t* hash) override;
+    void getPeerSharedSecret(uint8_t* dest_secret, int peer_idx) override;
+    bool onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* path, uint8_t path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) override;
+    void onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender_idx, const uint8_t* secret, uint8_t* data, size_t len) override;
 
 private:
     char _nodeName[32];
@@ -214,6 +326,21 @@ private:
     // Callbacks
     MessageCallback _msgCallback;
     NodeCallback _nodeCallback;
+    LoginCallback _loginCallback;
+    CLIResponseCallback _cliCallback;
+
+    // Forwarding state
+    bool _forwardingEnabled;
+
+    // Repeater session state
+    uint32_t _connectedRepeaterId;
+    char _connectedRepeaterName[32];
+    uint8_t _repeaterPermissions;
+    uint8_t _repeaterSharedSecret[32];
+    mesh::Identity _repeaterIdentity;
+    bool _repeaterConnected;
+    uint8_t _pendingLoginAttempt;
+    uint32_t _loginStartTime;  // For login timeout
 
     // Add message to history
     void addMessage(const Message& msg);

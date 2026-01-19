@@ -79,21 +79,70 @@
 // LoRa SPI settings
 #define LORA_SPI_FREQ   8000000 // 8MHz
 
-// SX1262 specific settings (from MeshCore)
-#define SX126X_DIO2_AS_RF_SWITCH    false
-#define SX126X_DIO3_TCXO_VOLTAGE    1.8f
-#define SX126X_CURRENT_LIMIT        140     // mA
-#define SX126X_RX_BOOSTED_GAIN      true
+// =============================================================================
+// REGIONAL FREQUENCY CONFIGURATION
+// Selected at build time via platformio.ini (tdeck_us, tdeck_eu, tdeck_au)
+// =============================================================================
 
-// Default LoRa settings (MeshCore compatible defaults)
-#define LORA_FREQUENCY_US   915.0   // MHz - US ISM band
-#define LORA_FREQUENCY_EU   868.0   // MHz - EU ISM band
-#define LORA_FREQUENCY_433  433.0   // MHz - 433 ISM band
-#define LORA_BANDWIDTH      250.0   // kHz (MeshCore default)
-#define LORA_SPREADING_FACTOR 10    // SF10 (MeshCore default)
-#define LORA_CODING_RATE    5       // 4/5 (MeshCore default)
-#define LORA_TX_POWER       22      // dBm (max for SX1262)
-#define LORA_PREAMBLE_LEN   16      // symbols
+// Default frequency if not specified by build
+#ifndef LORA_FREQ
+  #define LORA_FREQ  915.0      // Default to US band
+#endif
+
+// Region display name for UI
+#if defined(LORA_REGION_EU)
+  #define LORA_REGION_NAME "EU"
+  #define LORA_REGION_BAND "868 MHz"
+#elif defined(LORA_REGION_AU)
+  #define LORA_REGION_NAME "AU"
+  #define LORA_REGION_BAND "915 MHz"
+#else
+  // Default: US/FCC
+  #define LORA_REGION_NAME "US"
+  #define LORA_REGION_BAND "915 MHz"
+#endif
+
+// =============================================================================
+// SX1262 HARDWARE SETTINGS (T-Deck specific, from MeshCore)
+// =============================================================================
+
+#ifndef SX126X_DIO2_AS_RF_SWITCH
+  #define SX126X_DIO2_AS_RF_SWITCH    false
+#endif
+
+#ifndef SX126X_DIO3_TCXO_VOLTAGE
+  #define SX126X_DIO3_TCXO_VOLTAGE    1.8f
+#endif
+
+#ifndef SX126X_CURRENT_LIMIT
+  #define SX126X_CURRENT_LIMIT        140     // mA
+#endif
+
+#ifndef SX126X_RX_BOOSTED_GAIN
+  #define SX126X_RX_BOOSTED_GAIN      1
+#endif
+
+// =============================================================================
+// LORA PARAMETERS (MeshCore compatible defaults)
+// =============================================================================
+
+#ifndef LORA_BW
+  #define LORA_BW             250     // kHz bandwidth
+#endif
+
+#ifndef LORA_SF
+  #define LORA_SF             10      // Spreading factor
+#endif
+
+#ifndef LORA_CR
+  #define LORA_CR             5       // Coding rate (4/5)
+#endif
+
+#ifndef LORA_TX_POWER
+  #define LORA_TX_POWER       22      // dBm (max for SX1262)
+#endif
+
+#define LORA_PREAMBLE_LEN     16      // symbols
 
 // =============================================================================
 // GPS - u-blox MIA-M10Q (T-Deck Plus only, runtime detected)
