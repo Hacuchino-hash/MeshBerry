@@ -9,6 +9,7 @@
 #include "SoftKeyBar.h"
 #include "Icons.h"
 #include "../drivers/display.h"
+#include "../drivers/keyboard.h"
 #include "../config.h"
 
 AboutScreen::AboutScreen() {

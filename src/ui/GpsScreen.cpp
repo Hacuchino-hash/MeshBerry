@@ -9,6 +9,7 @@
 #include "SoftKeyBar.h"
 #include "../drivers/display.h"
 #include "../drivers/gps.h"
+#include "../drivers/keyboard.h"
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>

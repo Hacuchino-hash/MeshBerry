@@ -8,6 +8,7 @@
 #include "StatusScreen.h"
 #include "SoftKeyBar.h"
 #include "../drivers/display.h"
+#include "../drivers/keyboard.h"
 #include <stdio.h>
 
 void StatusScreen::onEnter() {
