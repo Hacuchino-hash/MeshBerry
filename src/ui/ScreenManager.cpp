@@ -221,14 +221,28 @@ void ScreenManager::update() {
         _currentScreen->update(deltaMs);
     }
 
-    // Check if redraw needed
-    bool needsRedraw = _forceRedraw ||
-                       StatusBar::needsUpdate() ||
-                       (_currentScreen && _currentScreen->needsRedraw());
-
-    if (needsRedraw) {
-        drawScreen(_forceRedraw);
+    // Handle redraws separately for each component
+    if (_forceRedraw) {
+        // Full redraw everything
+        drawScreen(true);
         _forceRedraw = false;
+    } else {
+        // Partial updates - only redraw what changed
+        bool statusNeedsUpdate = StatusBar::needsUpdate();
+        bool screenNeedsUpdate = _currentScreen && _currentScreen->needsRedraw();
+
+        // Only update status bar if it needs it (not the whole screen)
+        if (statusNeedsUpdate) {
+            StatusBar::draw();
+        }
+
+        // Only update screen content if it needs it
+        if (screenNeedsUpdate) {
+            _currentScreen->draw(false);
+            _currentScreen->clearRedrawFlag();
+        }
+
+        // Soft key bar rarely changes, only redraw on force
     }
 }
 

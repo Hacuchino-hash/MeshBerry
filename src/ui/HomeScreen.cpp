@@ -52,11 +52,15 @@ void HomeScreen::draw(bool fullRedraw) {
         for (int i = 0; i < HOME_ITEM_COUNT; i++) {
             drawTile(i, i == _selectedItem);
         }
+        _prevSelectedItem = _selectedItem;
     } else {
-        // Partial update - only redraw changed tiles
-        // For simplicity, redraw all tiles when selection changes
-        for (int i = 0; i < HOME_ITEM_COUNT; i++) {
-            drawTile(i, i == _selectedItem);
+        // Partial update - only redraw tiles that changed selection
+        if (_selectedItem != _prevSelectedItem) {
+            // Redraw previously selected (now deselected)
+            drawTile(_prevSelectedItem, false);
+            // Redraw newly selected
+            drawTile(_selectedItem, true);
+            _prevSelectedItem = _selectedItem;
         }
     }
 }

@@ -72,6 +72,7 @@ private:
 
     // State
     HomeMenuItem _selectedItem = HOME_MESSAGES;
+    HomeMenuItem _prevSelectedItem = HOME_MESSAGES;  // Track for partial redraws
     uint8_t _badges[HOME_ITEM_COUNT] = { 0 };
 
     // Layout
