@@ -299,8 +299,11 @@ bool ChannelsScreen::handleListInput(const InputData& input) {
     }
 
     // Right soft key or Back: go back
+    // Treat backspace as back in list view (not in text entry modes)
+    bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
     if (input.event == InputEvent::SOFTKEY_RIGHT ||
-        input.event == InputEvent::BACK) {
+        input.event == InputEvent::BACK ||
+        isBackKey) {
         Screens.goBack();
         return true;
     }

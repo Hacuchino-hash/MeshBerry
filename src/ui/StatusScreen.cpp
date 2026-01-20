@@ -84,6 +84,13 @@ void StatusScreen::draw(bool fullRedraw) {
 }
 
 bool StatusScreen::handleInput(const InputData& input) {
+    // Treat backspace as back since this screen has no text input
+    bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
+    if (isBackKey) {
+        Screens.goBack();
+        return true;
+    }
+
     switch (input.event) {
         case InputEvent::BACK:
         case InputEvent::TRACKBALL_LEFT:

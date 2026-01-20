@@ -273,8 +273,11 @@ bool SettingsScreen::handleInput(const InputData& input) {
     }
 
     // Normal navigation
+    // Treat backspace as back since this screen has no text input
+    bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
     if (input.event == InputEvent::BACK ||
-        input.event == InputEvent::TRACKBALL_LEFT) {
+        input.event == InputEvent::TRACKBALL_LEFT ||
+        isBackKey) {
         if (_currentLevel != SETTINGS_MAIN) {
             _currentLevel = SETTINGS_MAIN;
             buildMenu();

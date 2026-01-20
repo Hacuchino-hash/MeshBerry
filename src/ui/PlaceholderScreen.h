@@ -14,6 +14,7 @@
 #include "ScreenManager.h"
 #include "SoftKeyBar.h"
 #include "../drivers/display.h"
+#include "../drivers/keyboard.h"
 
 /**
  * Generic placeholder screen template
@@ -50,8 +51,11 @@ public:
     }
 
     bool handleInput(const InputData& input) override {
+        // Treat backspace as back since placeholder screens have no text input
+        bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
         if (input.event == InputEvent::BACK ||
-            input.event == InputEvent::TRACKBALL_LEFT) {
+            input.event == InputEvent::TRACKBALL_LEFT ||
+            isBackKey) {
             Screens.goBack();
             return true;
         }
