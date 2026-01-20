@@ -150,10 +150,15 @@
 
 #define PIN_GPS_TX      43      // ESP32 TX -> GPS RX
 #define PIN_GPS_RX      44      // ESP32 RX <- GPS TX
-#define GPS_BAUD        9600
 
-// GPS detection timeout
-#define GPS_DETECT_TIMEOUT_MS   2000
+// GPS baud rates - T-Deck Plus has two GPS variants:
+// - Quectel L76K uses 9600 baud
+// - u-blox M10Q uses 38400 baud
+#define GPS_BAUD_L76K   9600    // Quectel L76K
+#define GPS_BAUD_M10Q   38400   // u-blox MIA-M10Q
+
+// GPS detection timeout per baud rate attempt
+#define GPS_DETECT_TIMEOUT_MS   2500
 
 // =============================================================================
 // AUDIO OUTPUT - MAX98357A I2S Amplifier

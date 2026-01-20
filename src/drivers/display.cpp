@@ -79,16 +79,8 @@ bool init() {
     display->setRotation(3);  // Landscape
     display->setSPISpeed(40000000);
 
-    // Step 6: Color test
-    Serial.println("[DISPLAY] Running color test...");
-    display->fillScreen(ST77XX_RED);
-    delay(200);
-    display->fillScreen(ST77XX_GREEN);
-    delay(200);
-    display->fillScreen(ST77XX_BLUE);
-    delay(200);
+    // Step 6: Clear display (skip color test for faster boot)
     display->fillScreen(ST77XX_BLACK);
-    Serial.println("[DISPLAY] Color test complete");
 
     // Step 7: Configure text
     display->setTextColor(ST77XX_WHITE);
@@ -155,9 +147,95 @@ void setRotation(uint8_t rotation) {
     display->setRotation(rotation);
 }
 
-} // namespace Display
+// =============================================================================
+// ENHANCED DRAWING PRIMITIVES
+// =============================================================================
 
-// Provide access to display for advanced operations
-Adafruit_ST7789* getDisplayPtr() {
+void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->fillRoundRect(x, y, w, h, radius, color);
+}
+
+void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->drawRoundRect(x, y, w, h, radius, color);
+}
+
+void drawHLine(int16_t x, int16_t y, int16_t w, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->drawFastHLine(x, y, w, color);
+}
+
+void drawVLine(int16_t x, int16_t y, int16_t h, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->drawFastVLine(x, y, h, color);
+}
+
+void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->drawLine(x0, y0, x1, y1, color);
+}
+
+void fillCircle(int16_t x, int16_t y, int16_t r, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->fillCircle(x, y, r, color);
+}
+
+void drawCircle(int16_t x, int16_t y, int16_t r, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->drawCircle(x, y, r, color);
+}
+
+void fillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint16_t color) {
+    if (!displayInitialized || !display) return;
+    display->fillTriangle(x0, y0, x1, y1, x2, y2, color);
+}
+
+void drawTextCentered(int16_t x, int16_t y, int16_t w, const char* text, uint16_t color, uint8_t size) {
+    if (!displayInitialized || !display || !text) return;
+
+    // Calculate text width (6 pixels per char at size 1)
+    int16_t charWidth = 6 * size;
+    int16_t textWidth = strlen(text) * charWidth;
+    int16_t centeredX = x + (w - textWidth) / 2;
+
+    display->setTextColor(color);
+    display->setTextSize(size);
+    display->setCursor(centeredX, y);
+    display->print(text);
+}
+
+void drawTextRight(int16_t x, int16_t y, const char* text, uint16_t color, uint8_t size) {
+    if (!displayInitialized || !display || !text) return;
+
+    // Calculate text width
+    int16_t charWidth = 6 * size;
+    int16_t textWidth = strlen(text) * charWidth;
+    int16_t rightX = x - textWidth;
+
+    display->setTextColor(color);
+    display->setTextSize(size);
+    display->setCursor(rightX, y);
+    display->print(text);
+}
+
+void drawBitmap(int16_t x, int16_t y, const uint8_t* bitmap, int16_t w, int16_t h, uint16_t color) {
+    if (!displayInitialized || !display || !bitmap) return;
+    display->drawBitmap(x, y, bitmap, w, h, color);
+}
+
+void drawBitmapBg(int16_t x, int16_t y, const uint8_t* bitmap, int16_t w, int16_t h, uint16_t fgColor, uint16_t bgColor) {
+    if (!displayInitialized || !display || !bitmap) return;
+    display->drawBitmap(x, y, bitmap, w, h, fgColor, bgColor);
+}
+
+void drawRGB565(int16_t x, int16_t y, const uint16_t* bitmap, int16_t w, int16_t h) {
+    if (!displayInitialized || !display || !bitmap) return;
+    display->drawRGBBitmap(x, y, bitmap, w, h);
+}
+
+void* getDisplayPtr() {
     return display;
 }
+
+} // namespace Display

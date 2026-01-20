@@ -17,6 +17,8 @@
 #include "RadioSettings.h"
 #include "ChannelSettings.h"
 #include "ContactSettings.h"
+#include "DMSettings.h"
+#include "DeviceSettings.h"
 
 namespace SettingsManager {
 
@@ -58,6 +60,28 @@ ChannelSettings& getChannelSettings();
  * Get reference to current contact settings
  */
 ContactSettings& getContactSettings();
+
+/**
+ * Get reference to current DM settings
+ */
+DMSettings& getDMSettings();
+
+/**
+ * Get reference to current device settings
+ */
+DeviceSettings& getDeviceSettings();
+
+/**
+ * Save device settings to SPIFFS
+ * Call this after modifying device settings
+ */
+bool saveDeviceSettings();
+
+/**
+ * Save DMs to SPIFFS
+ * Call this after sending/receiving DMs
+ */
+bool saveDMs();
 
 /**
  * Save contacts to SPIFFS

@@ -70,12 +70,27 @@ uint16_t TDeckBoard::getBattMilliVolts() {
 uint8_t TDeckBoard::getBatteryPercent() {
     uint16_t mv = getBattMilliVolts();
 
-    // Convert mV to percentage (linear approximation)
-    // Full charge: 4200mV, Empty: 3000mV
-    if (mv >= 4200) return 100;
-    if (mv <= 3000) return 0;
+    // LiPo discharge curve approximation (more accurate than linear)
+    // Based on typical single-cell LiPo discharge characteristics
+    // The curve is non-linear with a plateau in the middle and steep drop at ends
+    //
+    // Voltage (mV) -> Percentage approximations:
+    // 4200+ = 100%, 4100 = 90%, 4000 = 80%, 3900 = 70%, 3800 = 60%
+    // 3700 = 40%, 3600 = 25%, 3500 = 15%, 3400 = 8%, 3300 = 4%, 3000 = 0%
 
-    return (uint8_t)(((mv - 3000) * 100) / 1200);
+    if (mv >= 4200) return 100;
+    if (mv >= 4100) return 90 + (mv - 4100) / 10;        // 90-100%
+    if (mv >= 4000) return 80 + (mv - 4000) / 10;        // 80-90%
+    if (mv >= 3900) return 70 + (mv - 3900) / 10;        // 70-80%
+    if (mv >= 3800) return 60 + (mv - 3800) / 10;        // 60-70%
+    if (mv >= 3700) return 40 + (mv - 3700) / 5;         // 40-60% (steeper)
+    if (mv >= 3600) return 25 + (mv - 3600) / 7;         // 25-40%
+    if (mv >= 3500) return 15 + (mv - 3500) / 10;        // 15-25%
+    if (mv >= 3400) return 8 + (mv - 3400) / 14;         // 8-15%
+    if (mv >= 3300) return 4 + (mv - 3300) / 25;         // 4-8%
+    if (mv >= 3000) return (mv - 3000) / 75;             // 0-4%
+
+    return 0;
 }
 
 const char* TDeckBoard::getManufacturerName() const {

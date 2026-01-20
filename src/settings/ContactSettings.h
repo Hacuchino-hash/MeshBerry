@@ -32,6 +32,11 @@ struct ContactEntry {
     uint8_t pubKey[32];     // Full public key (for repeater login)
     char savedPassword[16]; // Saved admin password (empty = not saved)
 
+    // Routing info - learned paths for direct routing
+    uint8_t outPath[64];    // Learned path to this contact (max 64 hops)
+    int8_t outPathLen;      // -1 = unknown, 0+ = valid path length
+    uint32_t pathLearnedAt; // millis() when path was learned
+
     void clear() {
         id = 0;
         name[0] = '\0';
@@ -43,6 +48,10 @@ struct ContactEntry {
         isActive = false;
         memset(pubKey, 0, sizeof(pubKey));
         savedPassword[0] = '\0';
+        // Clear routing info
+        memset(outPath, 0, sizeof(outPath));
+        outPathLen = -1;  // Unknown path
+        pathLearnedAt = 0;
     }
 
     bool hasSavedPassword() const {

@@ -17,11 +17,15 @@ static const char* SETTINGS_FILE = "/settings.json";
 static const char* CHANNELS_FILE = "/channels.json";
 static const char* CONTACTS_FILE = "/contacts.json";
 static const char* IDENTITY_FILE = "/identity.bin";
+static const char* DMS_FILE = "/dms.bin";
+static const char* DEVICE_FILE = "/device.json";
 
 // Current settings
 static RadioSettings radioSettings;
 static ChannelSettings channelSettings;
 static ContactSettings contactSettings;
+static DMSettings dmSettings;
+static DeviceSettings deviceSettings;
 static bool initialized = false;
 
 namespace SettingsManager {
@@ -31,6 +35,10 @@ static bool loadChannels();
 static bool saveChannels();
 static bool loadContacts();
 static bool saveContactsInternal();
+static bool loadDMs();
+static bool saveDMsInternal();
+static bool loadDevice();
+static bool saveDeviceInternal();
 
 bool init() {
     if (initialized) return true;
@@ -54,6 +62,20 @@ bool init() {
         Serial.println("[SETTINGS] No valid contacts found, using defaults");
         contactSettings.setDefaults();
         saveContactsInternal();
+    }
+
+    // Load DM conversations separately
+    if (!loadDMs()) {
+        Serial.println("[SETTINGS] No valid DMs found, using defaults");
+        dmSettings.setDefaults();
+        // Don't save yet - wait until there's actual data
+    }
+
+    // Load device settings separately
+    if (!loadDevice()) {
+        Serial.println("[SETTINGS] No valid device settings found, using defaults");
+        deviceSettings.setDefaults();
+        saveDeviceInternal();
     }
 
     initialized = true;
@@ -176,7 +198,6 @@ static bool loadChannels() {
 
     channelSettings.magic = magic;
     channelSettings.numChannels = doc["numChannels"] | 0;
-    channelSettings.activeChannel = doc["activeChannel"] | 0;
 
     // Load each channel
     JsonArray channels = doc["channels"];
@@ -197,7 +218,18 @@ static bool loadChannels() {
             int decodedLen = ChannelCrypto::decodePSK(secretB64, entry.secret, sizeof(entry.secret));
             if (decodedLen > 0) {
                 entry.secretLen = decodedLen;
+                // IMPORTANT: Recalculate hash from the decoded secret
+                // This ensures the hash is correct even if the stored hash was corrupted
+                ChannelCrypto::deriveHash(entry.secret, entry.secretLen, &entry.hash);
+                Serial.printf("[SETTINGS] Channel '%s' loaded: secretLen=%d, hash=0x%02X\n",
+                              entry.name, entry.secretLen, entry.hash);
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Failed to decode secret for channel '%s'\n", entry.name);
+                entry.isActive = false;  // Mark as inactive if key decode failed
             }
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Channel '%s' has no secret\n", entry.name);
+            entry.isActive = false;  // Mark as inactive if no key
         }
 
         idx++;
@@ -209,9 +241,7 @@ static bool loadChannels() {
         return false;
     }
 
-    Serial.printf("[SETTINGS] Loaded %d channels, active: %s\n",
-                  channelSettings.numChannels,
-                  channelSettings.getActiveChannel() ? channelSettings.getActiveChannel()->name : "none");
+    Serial.printf("[SETTINGS] Loaded %d channels\n", channelSettings.numChannels);
 
     return true;
 }
@@ -227,7 +257,6 @@ static bool saveChannels() {
 
     doc["magic"] = channelSettings.magic;
     doc["numChannels"] = channelSettings.numChannels;
-    doc["activeChannel"] = channelSettings.activeChannel;
 
     JsonArray channels = doc["channels"].to<JsonArray>();
     for (int i = 0; i < channelSettings.numChannels; i++) {
@@ -261,6 +290,7 @@ void resetToDefaults() {
     radioSettings.setDefaults();
     channelSettings.setDefaults();
     contactSettings.setDefaults();
+    deviceSettings.setDefaults();
     Serial.println("[SETTINGS] Reset to defaults");
 }
 
@@ -276,8 +306,24 @@ ContactSettings& getContactSettings() {
     return contactSettings;
 }
 
+DMSettings& getDMSettings() {
+    return dmSettings;
+}
+
+DeviceSettings& getDeviceSettings() {
+    return deviceSettings;
+}
+
 bool saveContacts() {
     return saveContactsInternal();
+}
+
+bool saveDMs() {
+    return saveDMsInternal();
+}
+
+bool saveDeviceSettings() {
+    return saveDeviceInternal();
 }
 
 static bool loadContacts() {
@@ -485,6 +531,136 @@ void setTxPower(uint8_t dbm) {
     if (dbm < TX_POWER_MIN || dbm > TX_POWER_MAX) return;
     radioSettings.txPower = dbm;
     radioSettings.region = REGION_CUSTOM;
+}
+
+// =============================================================================
+// DM PERSISTENCE (binary format for efficiency)
+// =============================================================================
+
+static bool loadDMs() {
+    if (!SPIFFS.exists(DMS_FILE)) {
+        Serial.println("[SETTINGS] DMs file not found");
+        return false;
+    }
+
+    File file = SPIFFS.open(DMS_FILE, "r");
+    if (!file) {
+        Serial.println("[SETTINGS] Failed to open DMs file");
+        return false;
+    }
+
+    // Read magic first
+    uint32_t magic = 0;
+    if (file.read((uint8_t*)&magic, 4) != 4 || magic != DMSettings::DM_MAGIC) {
+        Serial.println("[SETTINGS] Invalid DMs magic number");
+        file.close();
+        return false;
+    }
+
+    // Read the full struct
+    file.seek(0);
+    size_t bytesRead = file.read((uint8_t*)&dmSettings, sizeof(DMSettings));
+    file.close();
+
+    if (bytesRead != sizeof(DMSettings)) {
+        Serial.printf("[SETTINGS] DMs file size mismatch: %d vs %d\n", bytesRead, sizeof(DMSettings));
+        return false;
+    }
+
+    if (!dmSettings.isValid()) {
+        Serial.println("[SETTINGS] Loaded DMs invalid, resetting");
+        return false;
+    }
+
+    int activeCount = dmSettings.getActiveConversationCount();
+    Serial.printf("[SETTINGS] Loaded %d DM conversations\n", activeCount);
+    return true;
+}
+
+static bool saveDMsInternal() {
+    File file = SPIFFS.open(DMS_FILE, "w");
+    if (!file) {
+        Serial.println("[SETTINGS] Failed to create DMs file");
+        return false;
+    }
+
+    size_t bytesWritten = file.write((uint8_t*)&dmSettings, sizeof(DMSettings));
+    file.close();
+
+    if (bytesWritten != sizeof(DMSettings)) {
+        Serial.println("[SETTINGS] Failed to write DMs");
+        return false;
+    }
+
+    Serial.printf("[SETTINGS] DMs saved (%d bytes)\n", bytesWritten);
+    return true;
+}
+
+// =============================================================================
+// DEVICE SETTINGS PERSISTENCE
+// =============================================================================
+
+static bool loadDevice() {
+    if (!SPIFFS.exists(DEVICE_FILE)) {
+        Serial.println("[SETTINGS] Device file not found");
+        return false;
+    }
+
+    File file = SPIFFS.open(DEVICE_FILE, "r");
+    if (!file) {
+        Serial.println("[SETTINGS] Failed to open device file");
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+
+    if (error) {
+        Serial.printf("[SETTINGS] Device JSON parse error: %s\n", error.c_str());
+        return false;
+    }
+
+    // Check magic
+    uint32_t magic = doc["magic"] | 0;
+    if (magic != DeviceSettings::DEVICE_MAGIC) {
+        Serial.println("[SETTINGS] Invalid device magic number");
+        return false;
+    }
+
+    deviceSettings.magic = magic;
+    deviceSettings.gpsEnabled = doc["gpsEnabled"] | false;
+    deviceSettings.gpsRtcSyncEnabled = doc["gpsRtcSyncEnabled"] | true;
+    deviceSettings.backlightTimeout = doc["backlightTimeout"] | 30;
+
+    Serial.printf("[SETTINGS] Device settings loaded: gpsEnabled=%d, gpsRtcSync=%d\n",
+                  deviceSettings.gpsEnabled, deviceSettings.gpsRtcSyncEnabled);
+    return true;
+}
+
+static bool saveDeviceInternal() {
+    File file = SPIFFS.open(DEVICE_FILE, "w");
+    if (!file) {
+        Serial.println("[SETTINGS] Failed to create device file");
+        return false;
+    }
+
+    JsonDocument doc;
+
+    doc["magic"] = deviceSettings.magic;
+    doc["gpsEnabled"] = deviceSettings.gpsEnabled;
+    doc["gpsRtcSyncEnabled"] = deviceSettings.gpsRtcSyncEnabled;
+    doc["backlightTimeout"] = deviceSettings.backlightTimeout;
+
+    if (serializeJson(doc, file) == 0) {
+        Serial.println("[SETTINGS] Failed to write device settings");
+        file.close();
+        return false;
+    }
+
+    file.close();
+    Serial.println("[SETTINGS] Device settings saved");
+    return true;
 }
 
 // =============================================================================

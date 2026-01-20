@@ -49,11 +49,10 @@ void show() {
                 const ChannelEntry& ch = settings.channels[i];
                 char buf[48];
 
-                // Selection indicator and active marker
+                // Selection indicator
                 const char* prefix = (i == selectedIndex) ? ">" : " ";
-                const char* active = (i == settings.activeChannel) ? "[*]" : "[ ]";
 
-                snprintf(buf, sizeof(buf), "%s %s %s", prefix, ch.name, active);
+                snprintf(buf, sizeof(buf), "%s %s", prefix, ch.name);
                 uint16_t color = (i == selectedIndex) ? COLOR_ACCENT : COLOR_TEXT;
                 Display::drawText(10, y, buf, color, 1);
                 y += lineHeight;
@@ -182,11 +181,8 @@ bool handleKey(uint8_t key) {
                     show();
                 }
             } else if (key == KEY_ENTER) {
-                // Switch to selected channel
-                if (settings.setActiveChannel(selectedIndex)) {
-                    SettingsManager::save();
-                    show();
-                }
+                // View channel (legacy - no action now)
+                show();
             }
             break;
 
@@ -318,11 +314,8 @@ bool handleTrackball(bool up, bool down, bool left, bool right, bool click) {
                 needsRefresh = true;
             }
             if (click) {
-                // Switch to selected channel
-                if (settings.setActiveChannel(selectedIndex)) {
-                    SettingsManager::save();
-                    needsRefresh = true;
-                }
+                // View channel (legacy - no action now)
+                needsRefresh = true;
             }
             break;
 

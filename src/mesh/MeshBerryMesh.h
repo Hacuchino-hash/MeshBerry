@@ -51,13 +51,17 @@ public:
 class ESP32RTCClock : public mesh::RTCClock {
 private:
     uint32_t _epoch_offset;
+    bool _timeIsSet;  // true once clock has been synced from GPS, peer, or manual set
 
 public:
-    ESP32RTCClock() {
+    // Minimum valid epoch: Jan 1, 2025 (1735689600)
+    static constexpr uint32_t MIN_VALID_EPOCH = 1735689600;
+
+    ESP32RTCClock() : _timeIsSet(false) {
         // Set a reasonable default epoch (Jan 1, 2025 = 1735689600)
         // This ensures timestamps are plausible even before syncing from advertisements
         // The exact time will be synced from received advertisements
-        _epoch_offset = 1735689600;
+        _epoch_offset = MIN_VALID_EPOCH;
     }
 
     void begin() {
@@ -70,6 +74,26 @@ public:
 
     void setCurrentTime(uint32_t time) override {
         _epoch_offset = time - (millis() / 1000);
+        _timeIsSet = true;  // Mark as set
+    }
+
+    /**
+     * Check if time has been set (from GPS, peer, or manual)
+     */
+    bool isTimeSet() const { return _timeIsSet; }
+
+    /**
+     * Try to sync time from a peer timestamp (only if not already set)
+     * @param peerTime Unix timestamp from a peer
+     * @return true if time was synced
+     */
+    bool trySyncFromPeer(uint32_t peerTime) {
+        // Only sync if not already set and peer time is valid
+        if (!_timeIsSet && peerTime > MIN_VALID_EPOCH) {
+            setCurrentTime(peerTime);
+            return true;
+        }
+        return false;
     }
 };
 
@@ -202,6 +226,19 @@ public:
     void setMessageCallback(MessageCallback cb) { _msgCallback = cb; }
 
     /**
+     * Callback type for channel message received
+     * @param channelIdx Index of the channel (0-7)
+     * @param senderAndText Message text in format "SenderName: message"
+     * @param timestamp Unix timestamp of the message
+     */
+    typedef void (*ChannelMessageCallback)(int channelIdx, const char* senderAndText, uint32_t timestamp);
+
+    /**
+     * Set channel message callback
+     */
+    void setChannelMessageCallback(ChannelMessageCallback cb) { _channelMsgCallback = cb; }
+
+    /**
      * Callback type for node discovered
      */
     typedef void (*NodeCallback)(const NodeInfo& node);
@@ -240,6 +277,15 @@ public:
     typedef void (*CLIResponseCallback)(const char* response);
 
     /**
+     * Callback type for direct message received
+     * @param senderId Node ID of the sender
+     * @param senderName Name of the sender (from contacts)
+     * @param text Message text
+     * @param timestamp Unix timestamp of the message
+     */
+    typedef void (*DMCallback)(uint32_t senderId, const char* senderName, const char* text, uint32_t timestamp);
+
+    /**
      * Set login callback
      */
     void setLoginCallback(LoginCallback cb) { _loginCallback = cb; }
@@ -248,6 +294,23 @@ public:
      * Set CLI response callback
      */
     void setCLIResponseCallback(CLIResponseCallback cb) { _cliCallback = cb; }
+
+    /**
+     * Set direct message callback
+     */
+    void setDMCallback(DMCallback cb) { _dmCallback = cb; }
+
+    // =========================================================================
+    // DIRECT MESSAGING
+    // =========================================================================
+
+    /**
+     * Send a direct message to a contact
+     * @param contactId Node ID of the recipient
+     * @param text Message text
+     * @return true if packet was queued for send
+     */
+    bool sendDirectMessage(uint32_t contactId, const char* text);
 
     /**
      * Send login request to a repeater
@@ -328,6 +391,30 @@ private:
     NodeCallback _nodeCallback;
     LoginCallback _loginCallback;
     CLIResponseCallback _cliCallback;
+    ChannelMessageCallback _channelMsgCallback;
+    DMCallback _dmCallback;
+
+    // DM peer tracking (for decrypting incoming DMs)
+    struct DMPeer {
+        uint32_t contactId;
+        mesh::Identity identity;
+        uint8_t sharedSecret[32];
+        bool isActive;
+
+        // Routing info for direct messaging
+        uint8_t outPath[64];      // Learned path to this peer (max 64 hops)
+        int8_t outPathLen;        // -1 = unknown, 0+ = valid path length
+        uint32_t pathLearnedAt;   // millis() when path was learned
+
+        void clearPath() {
+            memset(outPath, 0, sizeof(outPath));
+            outPathLen = -1;
+            pathLearnedAt = 0;
+        }
+    };
+    static const int MAX_DM_PEERS = 8;
+    DMPeer _dmPeers[MAX_DM_PEERS];
+    int _lastMatchedDMPeer;  // Index of last matched DM peer (-1 if none/repeater)
 
     // Forwarding state
     bool _forwardingEnabled;
@@ -347,6 +434,38 @@ private:
 
     // Add or update node
     void updateNode(const NodeInfo& node);
+
+    // Find channel index by hash
+    int findChannelByHash(uint8_t hash);
+
+    // DM peer management
+    int findOrCreateDMPeer(uint32_t contactId);
+    int findDMPeerByHash(const uint8_t* hash);
+
+    // Path management for routing
+    static const uint32_t PATH_EXPIRY_MS = 30 * 60 * 1000;  // 30 minutes
+
+    /**
+     * Learn/store a path to a contact from received packet
+     * @param contactId Node ID to store path for
+     * @param path The path array (route the packet took)
+     * @param pathLen Length of the path
+     */
+    void learnPath(uint32_t contactId, const uint8_t* path, uint8_t pathLen);
+
+    /**
+     * Check if a stored path is still valid (not expired)
+     * @param pathLen Path length (-1 = unknown)
+     * @param learnedAt When the path was learned
+     * @return true if path is valid and not expired
+     */
+    bool isPathValid(int8_t pathLen, uint32_t learnedAt) const;
+
+    /**
+     * Invalidate (clear) path to a contact
+     * @param contactId Node ID to clear path for
+     */
+    void invalidatePath(uint32_t contactId);
 };
 
 #endif // MESHBERRY_MESH_H

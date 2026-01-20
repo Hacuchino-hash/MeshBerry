@@ -112,6 +112,28 @@ float getHDOP();
 uint32_t getFixAge();
 
 /**
+ * Get UTC time components
+ * @return true if time is valid
+ */
+bool getTime(uint8_t* hour, uint8_t* minute, uint8_t* second);
+
+/**
+ * Get date components
+ * @return true if date is valid
+ */
+bool getDate(uint8_t* day, uint8_t* month, uint16_t* year);
+
+/**
+ * Check if time data is valid
+ */
+bool hasValidTime();
+
+/**
+ * Check if date data is valid
+ */
+bool hasValidDate();
+
+/**
  * Get distance to another point
  * @param lat Destination latitude
  * @param lng Destination longitude
@@ -126,6 +148,17 @@ double distanceTo(double lat, double lng);
  * @return Bearing in degrees (0-360)
  */
 double bearingTo(double lat, double lng);
+
+/**
+ * Set the GPS baud rate (call before enable if re-enabling)
+ * T-Deck Plus has two GPS variants: L76K (9600) and M10Q (38400)
+ */
+void setBaudRate(uint32_t baud);
+
+/**
+ * Mark GPS as present (used when main.cpp detects GPS externally)
+ */
+void setPresent(bool present);
 
 /**
  * Enable/disable GPS

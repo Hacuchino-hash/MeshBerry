@@ -38,6 +38,8 @@ MeshBerryMesh::MeshBerryMesh(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock&
     , _nodeCallback(nullptr)
     , _loginCallback(nullptr)
     , _cliCallback(nullptr)
+    , _channelMsgCallback(nullptr)
+    , _dmCallback(nullptr)
     , _forwardingEnabled(true)
     , _connectedRepeaterId(0)
     , _repeaterPermissions(0)
@@ -50,6 +52,8 @@ MeshBerryMesh::MeshBerryMesh(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock&
     memset(_messages, 0, sizeof(_messages));
     memset(_connectedRepeaterName, 0, sizeof(_connectedRepeaterName));
     memset(_repeaterSharedSecret, 0, sizeof(_repeaterSharedSecret));
+    memset(_dmPeers, 0, sizeof(_dmPeers));
+    _lastMatchedDMPeer = -1;
 }
 
 bool MeshBerryMesh::begin() {
@@ -280,12 +284,11 @@ void MeshBerryMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id,
                                   uint32_t timestamp, const uint8_t* app_data, size_t app_data_len) {
     Serial.println("[MESH] Advertisement received");
 
-    // Sync our RTC clock from advertisement timestamp if significantly behind
-    // This ensures our timestamps are valid for login requests
-    uint32_t currentTime = getRTCClock()->getCurrentTime();
-    if (timestamp > currentTime + 60) {  // Their time is >60s ahead of ours
-        Serial.printf("[MESH] Syncing RTC from advertisement: %u -> %u\n", currentTime, timestamp);
-        getRTCClock()->setCurrentTime(timestamp);
+    // Auto-sync RTC from advertisement timestamp - only if not already set
+    // Cast to ESP32RTCClock to access trySyncFromPeer()
+    ESP32RTCClock* rtc = static_cast<ESP32RTCClock*>(getRTCClock());
+    if (rtc->trySyncFromPeer(timestamp)) {
+        Serial.printf("[MESH] Auto-synced RTC from peer advert: %u\n", timestamp);
     }
 
     // Debug: Print raw app_data
@@ -530,29 +533,55 @@ void MeshBerryMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const me
 
     // PAYLOAD_TYPE_GRP_TXT with MeshCore format: [4-byte timestamp][1-byte flags][text]
     if (type == 0x05 && len > 5 && (data[4] >> 2) == 0) {
-        Message msg;
-        memset(&msg, 0, sizeof(msg));
-
         // Extract timestamp from offset 0-3
-        memcpy(&msg.timestamp, data, 4);
+        uint32_t timestamp;
+        memcpy(&timestamp, data, 4);
 
-        msg.senderId = 0;  // Unknown sender for channel messages
+        // Auto-sync RTC from message timestamp - only if not already set
+        ESP32RTCClock* rtc = static_cast<ESP32RTCClock*>(getRTCClock());
+        if (rtc->trySyncFromPeer(timestamp)) {
+            Serial.printf("[MESH] Auto-synced RTC from channel message: %u\n", timestamp);
+        }
 
         // Message text is at offset 5 (includes "SenderName: " prefix)
         size_t textLen = len - 5;
-        if (textLen > sizeof(msg.text) - 1) {
-            textLen = sizeof(msg.text) - 1;
+        char textBuf[MAX_MESSAGE_LENGTH];
+        if (textLen > sizeof(textBuf) - 1) {
+            textLen = sizeof(textBuf) - 1;
         }
-        memcpy(msg.text, &data[5], textLen);
-        msg.text[textLen] = '\0';
+        memcpy(textBuf, &data[5], textLen);
+        textBuf[textLen] = '\0';
 
+        // Find which channel this is for
+        int channelIdx = findChannelByHash(channel.hash[0]);
+
+        Serial.printf("[MESH] Channel text (ch=%d): %s\n", channelIdx, textBuf);
+
+        // Call channel message callback for UI notification
+        if (_channelMsgCallback && channelIdx >= 0) {
+            _channelMsgCallback(channelIdx, textBuf, timestamp);
+        }
+
+        // Also add to general message history
+        Message msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.timestamp = timestamp;
+        msg.senderId = 0;  // Unknown sender for channel messages
+        strncpy(msg.text, textBuf, sizeof(msg.text) - 1);
         msg.isOutgoing = false;
         msg.delivered = true;
-
         addMessage(msg);
-
-        Serial.printf("[MESH] Channel text: %s\n", msg.text);
     }
+}
+
+int MeshBerryMesh::findChannelByHash(uint8_t hash) {
+    ChannelSettings& chSettings = SettingsManager::getChannelSettings();
+    for (int i = 0; i < chSettings.numChannels; i++) {
+        if (chSettings.channels[i].isActive && chSettings.channels[i].hash == hash) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 bool MeshBerryMesh::allowPacketForward(const mesh::Packet* packet) {
@@ -669,31 +698,58 @@ bool MeshBerryMesh::sendRepeaterCommand(const char* command) {
 
     if (!command || strlen(command) == 0) return false;
 
-    Serial.printf("[MESH] Sending command to %s: %s\n", _connectedRepeaterName, command);
+    Serial.printf("[MESH] Sending CLI command to %s: %s\n", _connectedRepeaterName, command);
 
     // Build command packet: [4-byte timestamp][1-byte flags][command string]
+    // MeshCore CLI format: timestamp(4) + flags(1) + text
+    // flags byte: bits[7:2] = TXT_TYPE (CLI_DATA=1), bits[1:0] = attempt counter
+    // So (TXT_TYPE_CLI_DATA << 2) = (1 << 2) = 0x04
     uint8_t payload[MAX_MESSAGE_LENGTH + 6];
     uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
     memcpy(payload, &timestamp, 4);
-    payload[4] = (TXT_TYPE_CLI_DATA << 2);  // CLI command flag
+    payload[4] = (TXT_TYPE_CLI_DATA << 2);  // CLI command flag = 0x04
 
     size_t cmdLen = strlen(command);
     if (cmdLen > MAX_MESSAGE_LENGTH - 1) cmdLen = MAX_MESSAGE_LENGTH - 1;
     memcpy(&payload[5], command, cmdLen);
-    payload[5 + cmdLen] = '\0';
+    payload[5 + cmdLen] = '\0';  // Null terminator in buffer but not counted in length
+
+    // Debug: show payload being sent
+    Serial.printf("[MESH] CLI payload: timestamp=%u, flags=0x%02X, cmd='%s', len=%d\n",
+                  timestamp, payload[4], command, (int)(5 + cmdLen));
+    Serial.print("[MESH] Payload hex: ");
+    for (size_t i = 0; i < 5 + cmdLen && i < 24; i++) {
+        Serial.printf("%02X", payload[i]);
+    }
+    Serial.println();
+
+    // Debug: show repeater identity info
+    uint8_t repHash[8];
+    _repeaterIdentity.copyHashTo(repHash);
+    Serial.printf("[MESH] Target repeater hash: %02X%02X%02X%02X\n",
+                  repHash[0], repHash[1], repHash[2], repHash[3]);
+    Serial.printf("[MESH] Shared secret: %02X%02X%02X%02X...\n",
+                  _repeaterSharedSecret[0], _repeaterSharedSecret[1],
+                  _repeaterSharedSecret[2], _repeaterSharedSecret[3]);
 
     // Create encrypted datagram to connected repeater
+    // Uses PAYLOAD_TYPE_TXT_MSG (0x02) which repeater expects for CLI commands
+    // Note: packet length is 5 + cmdLen (NOT +1), matching MeshCore's sendCommandData()
     mesh::Packet* pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, _repeaterIdentity,
-                                        _repeaterSharedSecret, payload, 5 + cmdLen + 1);
+                                        _repeaterSharedSecret, payload, 5 + cmdLen);
     if (!pkt) {
         Serial.println("[MESH] Failed to create command packet");
         return false;
     }
 
-    // Send with flood routing (TODO: use direct routing if we have a path)
+    // Debug: show packet info
+    Serial.printf("[MESH] Packet: type=0x%02X, header=0x%02X, payload_len=%d\n",
+                  pkt->getPayloadType(), pkt->header, pkt->payload_len);
+
+    // Send with flood routing
     sendFlood(pkt);
 
-    Serial.println("[MESH] Command sent");
+    Serial.println("[MESH] CLI command sent via flood");
     return true;
 }
 
@@ -713,8 +769,10 @@ int MeshBerryMesh::searchPeersByHash(const uint8_t* hash) {
     Serial.printf("[MESH] searchPeersByHash: looking for hash=%02X, pending=%d, connected=%d\n",
                   hash[0], _pendingLoginAttempt, _repeaterConnected);
 
+    // Reset last matched DM peer
+    _lastMatchedDMPeer = -1;
+
     // Check if hash matches our connected repeater OR pending login
-    // We need to match during login attempt so we can decrypt the response
     if (_repeaterConnected || _pendingLoginAttempt > 0) {
         uint8_t expectedHash[8];
         _repeaterIdentity.copyHashTo(expectedHash);
@@ -728,18 +786,34 @@ int MeshBerryMesh::searchPeersByHash(const uint8_t* hash) {
         }
     }
 
+    // Check DM peers
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].identity.isHashMatch(hash)) {
+            Serial.printf("[MESH] searchPeersByHash: FOUND DM peer match (slot %d)!\n", i);
+            _lastMatchedDMPeer = i;  // Remember which DM peer matched
+            return 1;
+        }
+    }
+
     Serial.println("[MESH] searchPeersByHash: no match");
     return 0;
 }
 
 void MeshBerryMesh::getPeerSharedSecret(uint8_t* dest_secret, int peer_idx) {
-    Serial.printf("[MESH] getPeerSharedSecret: peer_idx=%d, pending=%d, connected=%d\n",
-                  peer_idx, _pendingLoginAttempt, _repeaterConnected);
+    Serial.printf("[MESH] getPeerSharedSecret: peer_idx=%d, pending=%d, connected=%d, lastDM=%d\n",
+                  peer_idx, _pendingLoginAttempt, _repeaterConnected, _lastMatchedDMPeer);
+
+    // Check if this was a DM peer match (from searchPeersByHash)
+    if (_lastMatchedDMPeer >= 0 && _lastMatchedDMPeer < MAX_DM_PEERS) {
+        memcpy(dest_secret, _dmPeers[_lastMatchedDMPeer].sharedSecret, PUB_KEY_SIZE);
+        Serial.printf("[MESH] getPeerSharedSecret: returning DM peer secret (slot %d)\n", _lastMatchedDMPeer);
+        return;
+    }
 
     // Return shared secret for connected repeater OR pending login
     if (peer_idx == 0 && (_repeaterConnected || _pendingLoginAttempt > 0)) {
         memcpy(dest_secret, _repeaterSharedSecret, PUB_KEY_SIZE);
-        Serial.printf("[MESH] getPeerSharedSecret: returning secret %02X%02X%02X%02X...\n",
+        Serial.printf("[MESH] getPeerSharedSecret: returning repeater secret %02X%02X%02X%02X...\n",
                       _repeaterSharedSecret[0], _repeaterSharedSecret[1],
                       _repeaterSharedSecret[2], _repeaterSharedSecret[3]);
     } else {
@@ -797,6 +871,24 @@ bool MeshBerryMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const u
                 _loginCallback(false, 0, "");
             }
             return true;
+        }
+    }
+
+    // Learn the return path from the PATH_RETURN packet
+    // The 'path' parameter contains the route TO the sender (from our perspective)
+    if (path_len > 0) {
+        // Try to identify who sent this PATH_RETURN and learn their path
+        // Check DM peers first
+        if (_lastMatchedDMPeer >= 0 && _lastMatchedDMPeer < MAX_DM_PEERS) {
+            uint32_t contactId = _dmPeers[_lastMatchedDMPeer].contactId;
+            learnPath(contactId, path, path_len);
+            Serial.printf("[ROUTE] Learned path from PATH_RETURN to peer %08X (%d hops)\n",
+                          contactId, path_len);
+        }
+        // Also could be from a repeater
+        else if (_repeaterConnected || _pendingLoginAttempt > 0) {
+            // Store path to repeater - could be used for direct repeater comms
+            Serial.printf("[ROUTE] Received path from repeater (%d hops) - not storing yet\n", path_len);
         }
     }
 
@@ -858,7 +950,7 @@ void MeshBerryMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sende
     }
 
     // Handle text messages from connected repeater (CLI responses)
-    if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && _repeaterConnected) {
+    if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && _repeaterConnected && _lastMatchedDMPeer < 0) {
         uint8_t flags = data[4] >> 2;
 
         if (flags == TXT_TYPE_CLI_DATA || flags == TXT_TYPE_PLAIN) {
@@ -871,6 +963,278 @@ void MeshBerryMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sende
             if (_cliCallback) {
                 _cliCallback(responseText);
             }
+        }
+        return;
+    }
+
+    // Handle direct messages from DM peers
+    if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && _lastMatchedDMPeer >= 0) {
+        int dmIdx = _lastMatchedDMPeer;
+        if (dmIdx >= 0 && dmIdx < MAX_DM_PEERS && _dmPeers[dmIdx].isActive) {
+            // Parse DM: [4-byte timestamp][1-byte flags][text]
+            uint32_t timestamp;
+            memcpy(&timestamp, data, 4);
+            uint8_t flags = data[4] >> 2;  // Extract message type flags
+
+            // Only process plain text messages (TXT_TYPE_PLAIN = 0)
+            if (flags != 0) {
+                Serial.printf("[DM] Ignoring non-plain message (flags=%d)\n", flags);
+                return;
+            }
+
+            // Extract text (ensure null termination)
+            data[len] = '\0';
+            const char* text = (const char*)&data[5];  // Text at offset 5
+            size_t textLen = strlen(text);
+
+            // Get sender name from contacts
+            char senderName[32] = "Unknown";
+            ContactSettings& contacts = SettingsManager::getContactSettings();
+            int contactIdx = contacts.findContact(_dmPeers[dmIdx].contactId);
+            if (contactIdx >= 0) {
+                const ContactEntry* c = contacts.getContact(contactIdx);
+                if (c) strncpy(senderName, c->name, sizeof(senderName) - 1);
+            }
+
+            Serial.printf("[DM] Received from %s (ID=%08X): \"%s\" (ts=%u)\n",
+                          senderName, _dmPeers[dmIdx].contactId, text, timestamp);
+
+            // === LEARN PATH FROM FLOOD PACKET ===
+            // If the packet came via flood, the packet->path contains the route it took to reach us
+            // We can use this as the return path (it will be reversed when sending back)
+            if (packet->isRouteFlood() && packet->path_len > 0) {
+                learnPath(_dmPeers[dmIdx].contactId, packet->path, packet->path_len);
+                Serial.printf("[ROUTE] Learned path from flood DM: %d hops to %s\n",
+                              packet->path_len, senderName);
+            }
+
+            if (_dmCallback) {
+                _dmCallback(_dmPeers[dmIdx].contactId, senderName, text, timestamp);
+            }
+
+            // === SEND ACK ===
+            // Calculate ACK hash: truncated SHA256(timestamp+flags+text, sender_pub_key)
+            uint32_t ack_hash;
+            const uint8_t* senderPubKey = _dmPeers[dmIdx].identity.pub_key;
+            mesh::Utils::sha256((uint8_t*)&ack_hash, 4,
+                                data, 5 + textLen,        // timestamp + flags + text
+                                senderPubKey, PUB_KEY_SIZE);
+
+            Serial.printf("[DM] Sending ACK (hash=%08X)\n", ack_hash);
+
+            // Send path return with ACK embedded (provides sender with return path)
+            if (packet->isRouteFlood()) {
+                mesh::Packet* pathAck = createPathReturn(
+                    _dmPeers[dmIdx].identity,
+                    _dmPeers[dmIdx].sharedSecret,
+                    packet->path, packet->path_len,
+                    PAYLOAD_TYPE_ACK,
+                    (uint8_t*)&ack_hash, 4
+                );
+                if (pathAck) {
+                    sendFlood(pathAck, 200);  // TXT_ACK_DELAY = 200ms
+                    Serial.println("[DM] Path+ACK sent via flood");
+                }
+            } else {
+                // No flood route - send simple ACK
+                mesh::Packet* ack = createAck(ack_hash);
+                if (ack) {
+                    sendFlood(ack, 200);
+                    Serial.println("[DM] ACK sent via flood");
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// DIRECT MESSAGING
+// =============================================================================
+
+int MeshBerryMesh::findOrCreateDMPeer(uint32_t contactId) {
+    // Check if peer already exists
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].contactId == contactId) {
+            return i;
+        }
+    }
+
+    // Look up contact to get public key
+    ContactSettings& contacts = SettingsManager::getContactSettings();
+    int contactIdx = contacts.findContact(contactId);
+    if (contactIdx < 0) {
+        Serial.printf("[DM] Contact %08X not found\n", contactId);
+        return -1;
+    }
+
+    const ContactEntry* c = contacts.getContact(contactIdx);
+    if (!c) return -1;
+
+    // Check if public key is valid (not all zeros)
+    bool hasValidKey = false;
+    for (int i = 0; i < 32; i++) {
+        if (c->pubKey[i] != 0) { hasValidKey = true; break; }
+    }
+    if (!hasValidKey) {
+        Serial.printf("[DM] Contact %s has no valid public key\n", c->name);
+        return -1;
+    }
+
+    // Find empty slot
+    int slot = -1;
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (!_dmPeers[i].isActive) { slot = i; break; }
+    }
+    if (slot < 0) {
+        // Evict oldest (slot 0) if full
+        memmove(&_dmPeers[0], &_dmPeers[1], sizeof(DMPeer) * (MAX_DM_PEERS - 1));
+        slot = MAX_DM_PEERS - 1;
+        _dmPeers[slot].isActive = false;
+    }
+
+    // Set up identity and compute shared secret via ECDH
+    _dmPeers[slot].contactId = contactId;
+    _dmPeers[slot].identity = mesh::Identity(c->pubKey);
+    self_id.calcSharedSecret(_dmPeers[slot].sharedSecret, c->pubKey);
+    _dmPeers[slot].isActive = true;
+
+    // Initialize path from contact if available
+    if (c->outPathLen >= 0 && isPathValid(c->outPathLen, c->pathLearnedAt)) {
+        memcpy(_dmPeers[slot].outPath, c->outPath, c->outPathLen);
+        _dmPeers[slot].outPathLen = c->outPathLen;
+        _dmPeers[slot].pathLearnedAt = c->pathLearnedAt;
+        Serial.printf("[DM] Created peer entry for %s (slot %d) with existing path (%d hops)\n",
+                      c->name, slot, c->outPathLen);
+    } else {
+        _dmPeers[slot].clearPath();
+        Serial.printf("[DM] Created peer entry for %s (slot %d) - no path yet\n", c->name, slot);
+    }
+    return slot;
+}
+
+int MeshBerryMesh::findDMPeerByHash(const uint8_t* hash) {
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].identity.isHashMatch(hash)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text) {
+    if (!text || strlen(text) == 0) return false;
+
+    // Find or create DM peer entry
+    int peerIdx = findOrCreateDMPeer(contactId);
+    if (peerIdx < 0) {
+        Serial.println("[DM] Failed to create peer entry");
+        return false;
+    }
+
+    DMPeer& peer = _dmPeers[peerIdx];
+
+    // Build payload: [4-byte timestamp][1-byte flags][text]
+    // MeshCore format: flags byte contains (TXT_TYPE << 2) | attempt
+    // TXT_TYPE_PLAIN = 0, so flags = 0x00
+    uint32_t ts = getRTCClock()->getCurrentTime();
+    size_t textLen = strlen(text);
+    if (textLen > 249) textLen = 249;  // Limit to fit with header (5 bytes overhead)
+
+    uint8_t payload[260];
+    memcpy(payload, &ts, 4);           // Timestamp at offset 0-3
+    payload[4] = 0x00;                 // Flags: TXT_TYPE_PLAIN (0), attempt 0
+    memcpy(payload + 5, text, textLen);// Text at offset 5+
+
+    Serial.printf("[DM] Sending to %08X: \"%s\" (ts=%u, len=%d)\n",
+                  contactId, text, ts, (int)textLen);
+
+    // Create encrypted datagram using PAYLOAD_TYPE_TXT_MSG (0x02)
+    mesh::Packet* pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, peer.identity,
+                                        peer.sharedSecret, payload, 5 + textLen);
+    if (!pkt) {
+        Serial.println("[DM] Failed to create packet");
+        return false;
+    }
+
+    // Check if we have a valid path to this peer
+    if (isPathValid(peer.outPathLen, peer.pathLearnedAt)) {
+        // Use direct routing with learned path
+        sendDirect(pkt, peer.outPath, peer.outPathLen);
+        Serial.printf("[DM] Message sent via DIRECT route (%d hops)\n", peer.outPathLen);
+    } else {
+        // No valid path - use flood routing
+        sendFlood(pkt);
+        Serial.println("[DM] Message sent via FLOOD (no path known)");
+    }
+    return true;
+}
+
+// =============================================================================
+// PATH MANAGEMENT FOR ROUTING
+// =============================================================================
+
+void MeshBerryMesh::learnPath(uint32_t contactId, const uint8_t* path, uint8_t pathLen) {
+    if (!path || pathLen == 0 || pathLen > 64) return;
+
+    Serial.printf("[ROUTE] Learning path to %08X (%d hops)\n", contactId, pathLen);
+
+    // Update DMPeer if it exists
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].contactId == contactId) {
+            memcpy(_dmPeers[i].outPath, path, pathLen);
+            _dmPeers[i].outPathLen = pathLen;
+            _dmPeers[i].pathLearnedAt = millis();
+            Serial.printf("[ROUTE] Updated DMPeer slot %d with path\n", i);
+            break;
+        }
+    }
+
+    // Also update ContactEntry for persistence
+    ContactSettings& contacts = SettingsManager::getContactSettings();
+    int idx = contacts.findContact(contactId);
+    if (idx >= 0) {
+        ContactEntry* c = contacts.getContact(idx);
+        if (c) {
+            memcpy(c->outPath, path, pathLen);
+            c->outPathLen = pathLen;
+            c->pathLearnedAt = millis();
+            Serial.printf("[ROUTE] Updated contact '%s' with path\n", c->name);
+        }
+    }
+}
+
+bool MeshBerryMesh::isPathValid(int8_t pathLen, uint32_t learnedAt) const {
+    if (pathLen < 0) return false;  // Unknown path
+    if (pathLen == 0) return true;  // Direct neighbor (0 hops = direct)
+
+    // Check for expiration
+    uint32_t age = millis() - learnedAt;
+    if (age > PATH_EXPIRY_MS) {
+        return false;  // Path expired
+    }
+    return true;
+}
+
+void MeshBerryMesh::invalidatePath(uint32_t contactId) {
+    Serial.printf("[ROUTE] Invalidating path to %08X\n", contactId);
+
+    // Clear from DMPeer
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].contactId == contactId) {
+            _dmPeers[i].clearPath();
+            break;
+        }
+    }
+
+    // Clear from ContactEntry
+    ContactSettings& contacts = SettingsManager::getContactSettings();
+    int idx = contacts.findContact(contactId);
+    if (idx >= 0) {
+        ContactEntry* c = contacts.getContact(idx);
+        if (c) {
+            memset(c->outPath, 0, sizeof(c->outPath));
+            c->outPathLen = -1;
+            c->pathLearnedAt = 0;
         }
     }
 }

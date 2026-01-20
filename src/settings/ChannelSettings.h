@@ -50,7 +50,6 @@ struct ChannelEntry {
 struct ChannelSettings {
     ChannelEntry channels[MAX_CHANNELS];
     uint8_t numChannels;
-    uint8_t activeChannel;   // Index of currently selected channel
     uint32_t magic;
 
     static constexpr uint32_t CHANNEL_MAGIC = 0x4D424348;  // "MBCH"
@@ -88,20 +87,6 @@ struct ChannelSettings {
      * @return Index of channel, or -1 if not found
      */
     int findChannel(const char* name) const;
-
-    /**
-     * Get active channel entry
-     * @return Pointer to active channel, or nullptr
-     */
-    ChannelEntry* getActiveChannel();
-    const ChannelEntry* getActiveChannel() const;
-
-    /**
-     * Set active channel by index
-     * @param idx Channel index
-     * @return true if set
-     */
-    bool setActiveChannel(int idx);
 
     /**
      * Validate settings

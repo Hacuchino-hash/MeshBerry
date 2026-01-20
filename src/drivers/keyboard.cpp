@@ -158,11 +158,17 @@ void setBacklight(bool on) {
 
     backlightOn = on;
 
-    // Write to backlight control register
+    // T-Deck keyboard backlight control:
+    // Register 0x01 controls backlight with brightness 0-255
+    uint8_t brightness = on ? 0xFF : 0x00;  // Full brightness or off
+
     Wire.beginTransmission(KB_I2C_ADDR);
-    Wire.write(KB_REG_BL);
-    Wire.write(on ? 0x01 : 0x00);
-    Wire.endTransmission();
+    Wire.write(KB_REG_BL);      // Register 0x01 for backlight
+    Wire.write(brightness);      // Brightness value (0-255)
+    uint8_t error = Wire.endTransmission();
+
+    Serial.printf("[KEYBOARD] Backlight %s (brightness=%d, error=%d)\n",
+                  on ? "ON" : "OFF", brightness, error);
 }
 
 void toggleBacklight() {

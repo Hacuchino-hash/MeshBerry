@@ -54,10 +54,22 @@
 #include "settings/ChannelSettings.h"
 #include "settings/SettingsManager.h"
 
-// UI
-#include "ui/ChannelUI.h"
-#include "ui/MessagingUI.h"
-#include "ui/ContactUI.h"
+// New UI system
+#include "ui/Theme.h"
+#include "ui/ScreenManager.h"
+#include "ui/HomeScreen.h"
+#include "ui/StatusScreen.h"
+#include "ui/SettingsScreen.h"
+#include "ui/ContactsScreen.h"
+#include "ui/MessagesScreen.h"
+#include "ui/ChatScreen.h"
+#include "ui/ChannelsScreen.h"
+#include "ui/GpsScreen.h"
+#include "ui/PlaceholderScreen.h"
+#include "ui/RepeaterAdminScreen.h"
+#include "ui/RepeaterCLIScreen.h"
+#include "ui/DMChatScreen.h"
+#include "ui/BootLogo.h"
 
 // =============================================================================
 // GLOBAL OBJECTS
@@ -76,31 +88,35 @@ static ESP32RNG rng;
 static ESP32RTCClock rtcClock;
 static SimpleMeshTables meshTables;
 static StaticPoolPacketManager packetMgr(32);  // Pool size of 32 packets
-static MeshBerryMesh* theMesh = nullptr;
+MeshBerryMesh* theMesh = nullptr;  // Non-static - accessed by ChatScreen
 
 // State
 bool gpsPresent = false;
+uint32_t gpsBaudRate = 0;  // Detected GPS baud rate (9600 or 38400)
 static uint32_t lastAdvertTime = 0;
 static const uint32_t ADVERT_INTERVAL_MS = 300000;  // 5 minutes
+static bool rtcSyncedFromGps = false;  // Track if we've synced RTC from GPS
+static bool timezoneSynced = false;    // Track if timezone calculated from GPS
 
-// Input test state
-static char inputBuffer[64] = "";
-static int inputPos = 0;
-static int trackballX = 160;  // Center of 320 width
-static int trackballY = 120;  // Center of 240 height
+// Backlight timeout
+static uint32_t lastActivityTime = 0;
+static bool backlightDimmed = false;
+static const uint32_t BACKLIGHT_TIMEOUT_MS = 30000;  // 30 seconds
 
-// UI state
-enum UIScreen {
-    SCREEN_INPUT_TEST,
-    SCREEN_STATUS,
-    SCREEN_SETTINGS,
-    SCREEN_CHANNELS,
-    SCREEN_MESSAGES,
-    SCREEN_CONTACTS
-};
-static UIScreen currentScreen = SCREEN_INPUT_TEST;
-static int settingsMenuItem = 0;
-static const int SETTINGS_MENU_ITEMS = 6;  // Region, Freq, SF, BW, CR, TX Power
+// Screen instances for new UI system
+static HomeScreen homeScreen;
+static StatusScreen statusScreen;
+static SettingsScreen settingsScreen;
+static ContactsScreen contactsScreen;
+static MessagesScreen messagesScreen;
+ChatScreen chatScreen;  // Non-static so MessagesScreen can access it
+static ChannelsScreen channelsScreen;
+static GpsScreen gpsScreen;
+RepeaterAdminScreen repeaterAdminScreen;  // Non-static - accessed by ContactsScreen
+RepeaterCLIScreen* repeaterCLIScreen = nullptr;  // Pointer for external access
+static RepeaterCLIScreen _repeaterCLIScreen;  // Actual instance
+DMChatScreen dmChatScreen;  // Non-static - accessed by ContactsScreen
+static AboutPlaceholder aboutScreen("About");
 
 // CLI state
 static char cmdBuffer[128] = "";
@@ -111,23 +127,58 @@ static int cmdPos = 0;
 // =============================================================================
 
 void initHardware();
+void initUI();
 bool initRadio();
 bool initMesh();
 void showBootScreen();
-void showStatusScreen();
-void showInputTestScreen();
-void showSettingsScreen();
-void showChannelsScreen();
-void showMessagesScreen();
-void showContactsScreen();
 void handleInput();
 void handleSerialCLI();
 void processCommand(const char* cmd);
-void onSendMessage(const char* text);
 void onMessageReceived(const Message& msg);
 void onNodeDiscovered(const NodeInfo& node);
 void onLoginResponse(bool success, uint8_t permissions, const char* repeaterName);
 void onCLIResponse(const char* response);
+void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp);
+void onDMReceived(uint32_t senderId, const char* senderName, const char* text, uint32_t timestamp);
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Convert date/time components to UNIX epoch timestamp
+ * Simplified calculation (no leap seconds)
+ */
+uint32_t makeUnixTime(uint16_t year, uint8_t month, uint8_t day,
+                      uint8_t hour, uint8_t minute, uint8_t second) {
+    // Days from start of year to start of each month (non-leap year)
+    static const uint16_t daysToMonth[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+
+    uint32_t days = 0;
+
+    // Count days for complete years since 1970
+    for (uint16_t y = 1970; y < year; y++) {
+        bool isLeap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+        days += isLeap ? 366 : 365;
+    }
+
+    // Add days for complete months in current year
+    if (month >= 1 && month <= 12) {
+        days += daysToMonth[month - 1];
+    }
+
+    // Leap year adjustment for current year (if past February)
+    bool isLeapYear = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    if (month > 2 && isLeapYear) {
+        days++;
+    }
+
+    // Add days (1-based, so subtract 1)
+    days += day - 1;
+
+    // Convert to seconds and add time
+    return days * 86400UL + hour * 3600UL + minute * 60UL + second;
+}
 
 // =============================================================================
 // SETUP
@@ -163,15 +214,31 @@ void setup() {
     // Initialize hardware
     initHardware();
 
-    // Initialize radio and theMesh
+    // Initialize new UI system
+    initUI();
+
+    // Initialize radio and mesh
     if (initRadio()) {
         if (initMesh()) {
             Serial.println("[INIT] Mesh network ready");
+
+            // Update status bar with mesh info
+            Screens.setNodeName(theMesh->getNodeName());
+
+            // Set mesh instance for repeater admin (must be after initMesh)
+            repeaterAdminScreen.setMesh(theMesh);
         }
     }
 
-    // Show input test screen for keyboard/trackball testing
-    showInputTestScreen();
+    // Update status bar with initial state
+    Screens.setBatteryPercent(board.getBatteryPercent());
+    Screens.setGpsStatus(gpsPresent, false);
+
+    // Initialize activity timer for backlight timeout
+    lastActivityTime = millis();
+
+    // Navigate to home screen
+    Screens.navigateTo(ScreenId::HOME, false);
 
     Serial.println();
     Serial.println("[BOOT] MeshBerry ready!");
@@ -183,7 +250,7 @@ void setup() {
 // =============================================================================
 
 void loop() {
-    // Process theMesh network
+    // Process mesh network
     if (theMesh) {
         theMesh->loop();
 
@@ -195,11 +262,78 @@ void loop() {
         }
     }
 
+    // Update GPS and status bar fix indicator
+    if (gpsPresent) {
+        GPS::update();
+
+        // Auto-sync RTC from GPS (one-time, when GPS gets time lock)
+        DeviceSettings& deviceSettings = SettingsManager::getDeviceSettings();
+        if (!rtcSyncedFromGps && deviceSettings.gpsRtcSyncEnabled &&
+            GPS::hasValidTime() && GPS::hasValidDate()) {
+            uint8_t hour, minute, second;
+            uint8_t day, month;
+            uint16_t year;
+
+            if (GPS::getTime(&hour, &minute, &second) && GPS::getDate(&day, &month, &year)) {
+                // Sanity check: GPS may report "valid" before having real data
+                // Real GPS time should be year >= 2024
+                if (year >= 2024 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+                    uint32_t gpsEpoch = makeUnixTime(year, month, day, hour, minute, second);
+                    rtcClock.setCurrentTime(gpsEpoch);
+                    rtcSyncedFromGps = true;
+                    Serial.printf("[RTC] Synced from GPS: %u (UTC %04d-%02d-%02d %02d:%02d:%02d)\n",
+                                  gpsEpoch, year, month, day, hour, minute, second);
+
+                    // Disable GPS after sync if user doesn't want it always on
+                    if (!deviceSettings.gpsEnabled) {
+                        GPS::disable();
+                        Serial.println("[GPS] Disabled after RTC sync (power save)");
+                    }
+                }
+            }
+        }
+
+        // Update status bar GPS fix status every second
+        static uint32_t lastGpsUiUpdate = 0;
+        if (millis() - lastGpsUiUpdate > 1000) {
+            // Show GPS status: present and enabled, fix status based on whether we have a fix
+            Screens.setGpsStatus(GPS::isEnabled(), GPS::isEnabled() && GPS::hasFix());
+            lastGpsUiUpdate = millis();
+        }
+
+        // Calculate timezone from GPS longitude (one-time, when we get valid coordinates)
+        if (!timezoneSynced && GPS::hasFix()) {
+            double longitude = GPS::getLongitude();
+            // Simple timezone calculation: longitude / 15 = hours offset from UTC
+            int8_t tzOffset = (int8_t)round(longitude / 15.0);
+            Screens.setTimezoneOffset(tzOffset);
+            timezoneSynced = true;
+            Serial.printf("[RTC] Timezone set to UTC%+d from GPS longitude %.2f\n", tzOffset, longitude);
+        }
+    }
+
+    // Update status bar time from RTC (only when minute changes to reduce redraws)
+    static uint32_t lastMinute = 0;
+    uint32_t currentMinute = rtcClock.getCurrentTime() / 60;
+    if (currentMinute != lastMinute) {
+        Screens.setTime(rtcClock.getCurrentTime());
+        lastMinute = currentMinute;
+    }
+
+    // Keyboard backlight timeout
+    if (!backlightDimmed && (millis() - lastActivityTime > BACKLIGHT_TIMEOUT_MS)) {
+        Keyboard::setBacklight(false);
+        backlightDimmed = true;
+    }
+
     // Handle serial CLI commands
     handleSerialCLI();
 
     // Handle keyboard/trackball input
     handleInput();
+
+    // Update UI system (handles redraws)
+    Screens.update();
 
     // Yield to other tasks
     delay(1);
@@ -247,19 +381,83 @@ void initHardware() {
     pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
     Serial.println("[INIT] Trackball: OK");
 
-    // Detect GPS (T-Deck Plus)
-    Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
-    unsigned long start = millis();
-    while (millis() - start < GPS_DETECT_TIMEOUT_MS) {
-        if (Serial1.available() && Serial1.read() == '$') {
-            gpsPresent = true;
-            break;
+    // Detect GPS (T-Deck Plus has two GPS variants with different baud rates)
+    // Try both L76K (9600) and M10Q (38400) baud rates
+    Serial.println("[INIT] Detecting GPS...");
+
+    const uint32_t baudRates[] = { GPS_BAUD_L76K, GPS_BAUD_M10Q };
+    const char* baudNames[] = { "L76K (9600)", "M10Q (38400)" };
+
+    for (int attempt = 0; attempt < 2 && !gpsPresent; attempt++) {
+        uint32_t baud = baudRates[attempt];
+        Serial.printf("[INIT] Trying GPS at %s...\n", baudNames[attempt]);
+
+        Serial1.end();  // Close any previous connection
+        delay(50);
+        Serial1.begin(baud, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+        delay(100);  // Give serial time to initialize
+
+        // Clear any garbage in the buffer
+        while (Serial1.available()) Serial1.read();
+
+        unsigned long start = millis();
+        int bytesRead = 0;
+        char debugBuf[64];
+        int debugPos = 0;
+
+        while (millis() - start < GPS_DETECT_TIMEOUT_MS) {
+            while (Serial1.available()) {
+                char c = Serial1.read();
+                bytesRead++;
+                // Capture first 60 bytes for debug
+                if (debugPos < 60) {
+                    debugBuf[debugPos++] = c;
+                }
+                if (c == '$') {
+                    // Found start of NMEA sentence - valid GPS data!
+                    gpsPresent = true;
+                    gpsBaudRate = baud;  // Store for GPS driver
+                    break;
+                }
+            }
+            if (gpsPresent) break;
+            delay(10);
+        }
+        debugBuf[debugPos] = '\0';
+
+        if (gpsPresent) {
+            Serial.printf("[INIT] GPS: OK at %s (detected after %d bytes)\n", baudNames[attempt], bytesRead);
+        } else if (debugPos > 0) {
+            Serial.printf("[INIT] GPS: No NMEA at %s (%d bytes read)\n", baudNames[attempt], bytesRead);
+            // Print debug info on last attempt
+            if (attempt == 1) {
+                Serial.print("[INIT] Last bytes (hex): ");
+                for (int i = 0; i < debugPos && i < 16; i++) {
+                    Serial.printf("%02X ", (uint8_t)debugBuf[i]);
+                }
+                Serial.println();
+            }
+        } else {
+            Serial.printf("[INIT] GPS: No data at %s\n", baudNames[attempt]);
         }
     }
+
     if (gpsPresent) {
-        Serial.println("[INIT] GPS: OK (T-Deck Plus detected)");
+        // Tell GPS driver about detected GPS
+        GPS::setPresent(true);
+        GPS::setBaudRate(gpsBaudRate);
+
+        // Check device settings to determine if GPS should be enabled
+        DeviceSettings& deviceSettings = SettingsManager::getDeviceSettings();
+        if (deviceSettings.gpsRtcSyncEnabled || deviceSettings.gpsEnabled) {
+            GPS::enable();
+            Serial.println("[INIT] GPS: Enabled for RTC sync");
+        } else {
+            Serial.println("[INIT] GPS: Disabled (user preference)");
+            Serial1.end();
+        }
     } else {
-        Serial.println("[INIT] GPS: Not present (T-Deck base model)");
+        Serial.println("[INIT] GPS: Not detected at any baud rate");
         Serial1.end();
     }
 
@@ -309,9 +507,8 @@ bool initMesh() {
     theMesh->setNodeCallback(onNodeDiscovered);
     theMesh->setLoginCallback(onLoginResponse);
     theMesh->setCLIResponseCallback(onCLIResponse);
-
-    // Pass mesh to ContactUI for admin operations
-    ContactUI::setMesh(theMesh);
+    theMesh->setChannelMessageCallback(onChannelMessage);
+    theMesh->setDMCallback(onDMReceived);
 
     // Start theMesh
     if (!theMesh->begin()) {
@@ -335,436 +532,113 @@ bool initMesh() {
 // =============================================================================
 
 void showBootScreen() {
-    Display::clear(COLOR_BACKGROUND);
-    Display::drawText(10, 20, "MeshBerry", COLOR_ACCENT, 3);
-    Display::drawText(10, 60, "v" MESHBERRY_VERSION, COLOR_TEXT, 2);
+    Display::clear(Theme::BG_PRIMARY);
 
-    // Show region info from settings
+    // Center the grayscale logo horizontally and vertically (top portion)
+    int16_t logoX = (Theme::SCREEN_WIDTH - BootLogo::WIDTH) / 2;
+    int16_t logoY = 8;
+
+    // Draw the MeshBerry grayscale logo (RGB565 format)
+    Display::drawRGB565(logoX, logoY, BootLogo::LOGO,
+                        BootLogo::WIDTH, BootLogo::HEIGHT);
+
+    // Title centered below logo
+    int16_t textY = logoY + BootLogo::HEIGHT + 10;
+    Display::drawTextCentered(0, textY, Theme::SCREEN_WIDTH, "MeshBerry", Theme::WHITE, 3);
+
+    // Version below title
+    textY += 28;
+    char verStr[16];
+    snprintf(verStr, sizeof(verStr), "v%s", MESHBERRY_VERSION);
+    Display::drawTextCentered(0, textY, Theme::SCREEN_WIDTH, verStr, Theme::ACCENT, 2);
+
+    // Region info from settings
+    textY += 24;
     RadioSettings& settings = SettingsManager::getRadioSettings();
     char regionStr[48];
     snprintf(regionStr, sizeof(regionStr), "Region: %s (%.3f MHz)",
              settings.getRegionName(), settings.frequency);
-    Display::drawText(10, 90, regionStr, COLOR_TEXT, 1);
+    Display::drawTextCentered(0, textY, Theme::SCREEN_WIDTH, regionStr, Theme::TEXT_SECONDARY, 1);
 
-    Display::drawText(10, 110, "Initializing...", COLOR_TEXT, 1);
+    // Status at bottom
+    textY += 20;
+    Display::drawTextCentered(0, textY, Theme::SCREEN_WIDTH, "Initializing...", Theme::TEXT_SECONDARY, 1);
 }
 
-void showStatusScreen() {
-    currentScreen = SCREEN_STATUS;
-    Display::clear(COLOR_BACKGROUND);
-    Display::drawText(10, 10, "MeshBerry Status", COLOR_ACCENT, 2);
+void initUI() {
+    Serial.println("[UI] Initializing screen manager...");
 
-    RadioSettings& settings = SettingsManager::getRadioSettings();
+    // Initialize the screen manager (also inits StatusBar and SoftKeyBar)
+    Screens.init();
 
-    // Battery
-    uint8_t batt = board.getBatteryPercent();
-    char battStr[32];
-    snprintf(battStr, sizeof(battStr), "Battery: %d%%", batt);
-    Display::drawText(10, 40, battStr, COLOR_TEXT, 1);
+    // Set up the CLI screen pointer for external access
+    repeaterCLIScreen = &_repeaterCLIScreen;
 
-    // Radio status with current settings
-    char radioStr[64];
-    snprintf(radioStr, sizeof(radioStr), "LoRa: %.3f MHz SF%d BW%s",
-             settings.frequency, settings.spreadingFactor, settings.getBandwidthStr());
-    Display::drawText(10, 60, radioStr, COLOR_ACCENT, 1);
+    // Register all screens
+    Screens.registerScreen(&homeScreen);
+    Screens.registerScreen(&statusScreen);
+    Screens.registerScreen(&messagesScreen);
+    Screens.registerScreen(&chatScreen);
+    Screens.registerScreen(&dmChatScreen);
+    Screens.registerScreen(&contactsScreen);
+    Screens.registerScreen(&settingsScreen);
+    Screens.registerScreen(&channelsScreen);
+    Screens.registerScreen(&gpsScreen);
+    Screens.registerScreen(&repeaterAdminScreen);
+    Screens.registerScreen(&_repeaterCLIScreen);
+    Screens.registerScreen(&aboutScreen);
 
-    // Region
-    char regionStr[32];
-    snprintf(regionStr, sizeof(regionStr), "Region: %s  TX: %d dBm",
-             settings.getRegionName(), settings.txPower);
-    Display::drawText(10, 80, regionStr, COLOR_TEXT, 1);
+    // Note: repeaterAdminScreen.setMesh() is called after initMesh() in setup()
 
-    // GPS
-    if (gpsPresent) {
-        Display::drawText(10, 100, "GPS: T-Deck Plus", COLOR_ACCENT, 1);
-    } else {
-        Display::drawText(10, 100, "GPS: Not present", COLOR_TEXT, 1);
-    }
-
-    // Nodes
-    int nodes = theMesh ? theMesh->getNodeCount() : 0;
-    char nodeStr[32];
-    snprintf(nodeStr, sizeof(nodeStr), "Nodes: %d", nodes);
-    Display::drawText(10, 120, nodeStr, COLOR_TEXT, 1);
-
-    // Messages
-    int msgs = theMesh ? theMesh->getMessageCount() : 0;
-    char msgStr[32];
-    snprintf(msgStr, sizeof(msgStr), "Messages: %d", msgs);
-    Display::drawText(10, 140, msgStr, COLOR_TEXT, 1);
-
-    // Active channel
-    ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-    const ChannelEntry* activeCh = chSettings.getActiveChannel();
-    char chStr[48];
-    snprintf(chStr, sizeof(chStr), "Channel: %s", activeCh ? activeCh->name : "None");
-    Display::drawText(10, 160, chStr, COLOR_ACCENT, 1);
-
-    // Instructions
-    Display::drawText(10, 185, "S=Sett  C=Chan  M=Msg  N=Nodes", COLOR_WARNING, 1);
-    Display::drawText(10, 205, "ESC/DEL=Back", COLOR_WARNING, 1);
-}
-
-void showInputTestScreen() {
-    currentScreen = SCREEN_INPUT_TEST;
-    Display::clear(COLOR_BACKGROUND);
-    Display::drawText(10, 10, "Input Test Mode", COLOR_ACCENT, 2);
-    Display::drawText(10, 40, "Type on keyboard:", COLOR_TEXT, 1);
-
-    // Draw input buffer area
-    Display::drawRect(10, 60, 300, 30, COLOR_TEXT);
-    Display::drawText(15, 68, inputBuffer, COLOR_ACCENT, 1);
-
-    // Draw trackball position indicator
-    Display::drawText(10, 100, "Trackball: Move to test", COLOR_TEXT, 1);
-
-    // Draw cursor position
-    Display::fillRect(trackballX - 5, trackballY - 5, 10, 10, COLOR_ACCENT);
-
-    // Instructions
-    Display::drawText(10, 200, "ESC=Status S=Sett C=Ch M=Msg N=Nod", COLOR_WARNING, 1);
-}
-
-void showSettingsScreen() {
-    currentScreen = SCREEN_SETTINGS;
-    Display::clear(COLOR_BACKGROUND);
-    Display::drawText(10, 10, "Radio Settings", COLOR_ACCENT, 2);
-
-    RadioSettings& settings = SettingsManager::getRadioSettings();
-
-    int y = 45;
-    const int lineHeight = 22;
-    char buf[48];
-
-    // Region
-    snprintf(buf, sizeof(buf), "%s Region: %s",
-             settingsMenuItem == 0 ? ">" : " ", settings.getRegionName());
-    Display::drawText(10, y, buf, settingsMenuItem == 0 ? COLOR_ACCENT : COLOR_TEXT, 1);
-    y += lineHeight;
-
-    // Frequency
-    snprintf(buf, sizeof(buf), "%s Frequency: %.3f MHz",
-             settingsMenuItem == 1 ? ">" : " ", settings.frequency);
-    Display::drawText(10, y, buf, settingsMenuItem == 1 ? COLOR_ACCENT : COLOR_TEXT, 1);
-    y += lineHeight;
-
-    // Spreading Factor
-    snprintf(buf, sizeof(buf), "%s Spreading Factor: %d",
-             settingsMenuItem == 2 ? ">" : " ", settings.spreadingFactor);
-    Display::drawText(10, y, buf, settingsMenuItem == 2 ? COLOR_ACCENT : COLOR_TEXT, 1);
-    y += lineHeight;
-
-    // Bandwidth
-    snprintf(buf, sizeof(buf), "%s Bandwidth: %s kHz",
-             settingsMenuItem == 3 ? ">" : " ", settings.getBandwidthStr());
-    Display::drawText(10, y, buf, settingsMenuItem == 3 ? COLOR_ACCENT : COLOR_TEXT, 1);
-    y += lineHeight;
-
-    // Coding Rate
-    snprintf(buf, sizeof(buf), "%s Coding Rate: 4/%d",
-             settingsMenuItem == 4 ? ">" : " ", settings.codingRate);
-    Display::drawText(10, y, buf, settingsMenuItem == 4 ? COLOR_ACCENT : COLOR_TEXT, 1);
-    y += lineHeight;
-
-    // TX Power
-    snprintf(buf, sizeof(buf), "%s TX Power: %d dBm",
-             settingsMenuItem == 5 ? ">" : " ", settings.txPower);
-    Display::drawText(10, y, buf, settingsMenuItem == 5 ? COLOR_ACCENT : COLOR_TEXT, 1);
-
-    // Instructions
-    Display::drawText(10, 200, "UP/DN=Nav  L/R=Edit  ESC=Save", COLOR_WARNING, 1);
-}
-
-void showChannelsScreen() {
-    currentScreen = SCREEN_CHANNELS;
-    ChannelUI::init();
-    ChannelUI::show();
-}
-
-void showMessagesScreen() {
-    currentScreen = SCREEN_MESSAGES;
-    MessagingUI::init();
-    MessagingUI::setSendCallback(onSendMessage);
-    MessagingUI::show();
-}
-
-void showContactsScreen() {
-    currentScreen = SCREEN_CONTACTS;
-    ContactUI::init();
-    ContactUI::show();
-}
-
-void onSendMessage(const char* text) {
-    if (theMesh) {
-        ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-        theMesh->sendToChannel(chSettings.activeChannel, text);
-        Serial.printf("[MSG] Sent to channel %d: %s\n", chSettings.activeChannel, text);
-    }
+    Serial.println("[UI] Screen manager ready");
 }
 
 void handleInput() {
-    static bool needsRedraw = false;
-
-    // Handle keyboard - poll directly
+    // Handle keyboard
     uint8_t key = Keyboard::read();
     if (key != KEY_NONE) {
-        char c = Keyboard::getChar(key);
-
-        Serial.printf("[INPUT] Key code: 0x%02X, char: '%c'\n", key, c ? c : '?');
-
-        // Handle based on current screen
-        if (currentScreen == SCREEN_SETTINGS) {
-            // Settings screen input handling
-            RadioSettings& settings = SettingsManager::getRadioSettings();
-
-            if (key == KEY_ESC || key == KEY_BACKSPACE) {
-                // Save and exit settings (Delete/Backspace acts as back)
-                SettingsManager::save();
-                LoRa::applySettings(settings);
-                showStatusScreen();
-                return;
-            }
-            needsRedraw = true;  // Most actions need redraw in settings
-        } else if (currentScreen == SCREEN_CHANNELS) {
-            // Channel screen input handling
-            if (ChannelUI::handleKey(key)) {
-                // Exit back to status
-                showStatusScreen();
-                return;
-            }
-            // ChannelUI handles its own redraws
-        } else if (currentScreen == SCREEN_MESSAGES) {
-            // Messages screen input handling
-            if (MessagingUI::handleKey(key)) {
-                // Exit back to status
-                showStatusScreen();
-                return;
-            }
-            // MessagingUI handles its own redraws
-        } else if (currentScreen == SCREEN_CONTACTS) {
-            // Contacts screen input handling
-            if (ContactUI::handleKey(key)) {
-                // Exit back to status
-                showStatusScreen();
-                return;
-            }
-            // ContactUI handles its own redraws
-        } else {
-            // Status and Input test screens
-            // ESC or Backspace (when not typing) acts as navigation
-            if (key == KEY_ESC || (key == KEY_BACKSPACE && currentScreen == SCREEN_STATUS)) {
-                if (currentScreen == SCREEN_INPUT_TEST) {
-                    showStatusScreen();
-                } else {
-                    showInputTestScreen();
-                }
-                return;
-            } else if (c == 's' || c == 'S') {
-                showSettingsScreen();
-                return;
-            } else if (c == 'c' || c == 'C') {
-                showChannelsScreen();
-                return;
-            } else if (c == 'm' || c == 'M') {
-                showMessagesScreen();
-                return;
-            } else if (c == 'n' || c == 'N') {
-                showContactsScreen();
-                return;
-            } else if (currentScreen == SCREEN_INPUT_TEST) {
-                if (c == '\b' && inputPos > 0) {
-                    inputBuffer[--inputPos] = '\0';
-                    needsRedraw = true;
-                } else if (c == '\n') {
-                    inputBuffer[0] = '\0';
-                    inputPos = 0;
-                    needsRedraw = true;
-                } else if (c >= 32 && c < 127 && inputPos < 62) {
-                    inputBuffer[inputPos++] = c;
-                    inputBuffer[inputPos] = '\0';
-                    needsRedraw = true;
-                }
-            }
+        // Reset activity timer and restore backlight
+        lastActivityTime = millis();
+        if (backlightDimmed) {
+            Keyboard::setBacklight(true);
+            backlightDimmed = false;
         }
+
+        char c = Keyboard::getChar(key);
+        Screens.handleKey(key, c);
     }
 
-    // Handle trackball movement
-    static bool prevUp = true, prevDown = true, prevLeft = true, prevRight = true;
-    static bool prevClick = true;
+    // Handle trackball (edge detection)
+    static bool prevUp = true, prevDown = true, prevLeft = true, prevRight = true, prevClick = true;
     bool up = digitalRead(PIN_TRACKBALL_UP);
     bool down = digitalRead(PIN_TRACKBALL_DOWN);
     bool left = digitalRead(PIN_TRACKBALL_LEFT);
     bool right = digitalRead(PIN_TRACKBALL_RIGHT);
     bool click = digitalRead(PIN_TRACKBALL_CLICK);
 
-    if (currentScreen == SCREEN_CHANNELS) {
-        // Channel screen trackball handling
-        bool upEdge = !up && prevUp;
-        bool downEdge = !down && prevDown;
-        bool leftEdge = !left && prevLeft;
-        bool rightEdge = !right && prevRight;
-        bool clickEdge = !click && prevClick;
+    // Only send events on edges (button press)
+    bool upEdge = !up && prevUp;
+    bool downEdge = !down && prevDown;
+    bool leftEdge = !left && prevLeft;
+    bool rightEdge = !right && prevRight;
+    bool clickEdge = !click && prevClick;
 
-        ChannelUI::handleTrackball(upEdge, downEdge, leftEdge, rightEdge, clickEdge);
-        // ChannelUI handles its own redraws
-    } else if (currentScreen == SCREEN_MESSAGES) {
-        // Messages screen trackball handling
-        bool upEdge = !up && prevUp;
-        bool downEdge = !down && prevDown;
-        bool leftEdge = !left && prevLeft;
-        bool rightEdge = !right && prevRight;
-        bool clickEdge = !click && prevClick;
+    if (upEdge || downEdge || leftEdge || rightEdge || clickEdge) {
+        // Reset activity timer and restore backlight
+        lastActivityTime = millis();
+        if (backlightDimmed) {
+            Keyboard::setBacklight(true);
+            backlightDimmed = false;
+        }
 
-        MessagingUI::handleTrackball(upEdge, downEdge, leftEdge, rightEdge, clickEdge);
-        // MessagingUI handles its own redraws
-    } else if (currentScreen == SCREEN_CONTACTS) {
-        // Contacts screen trackball handling
-        bool upEdge = !up && prevUp;
-        bool downEdge = !down && prevDown;
-        bool leftEdge = !left && prevLeft;
-        bool rightEdge = !right && prevRight;
-        bool clickEdge = !click && prevClick;
-
-        ContactUI::handleTrackball(upEdge, downEdge, leftEdge, rightEdge, clickEdge);
-        // ContactUI handles its own redraws
-    } else if (currentScreen == SCREEN_SETTINGS) {
-        // Settings navigation
-        RadioSettings& settings = SettingsManager::getRadioSettings();
-
-        if (!up && prevUp) {
-            settingsMenuItem = (settingsMenuItem - 1 + SETTINGS_MENU_ITEMS) % SETTINGS_MENU_ITEMS;
-            needsRedraw = true;
-        }
-        if (!down && prevDown) {
-            settingsMenuItem = (settingsMenuItem + 1) % SETTINGS_MENU_ITEMS;
-            needsRedraw = true;
-        }
-        if (!left && prevLeft) {
-            // Decrease value
-            switch (settingsMenuItem) {
-                case 0:  // Region
-                    if (settings.region > 0) {
-                        settings.setRegionPreset((LoRaRegion)(settings.region - 1));
-                    }
-                    break;
-                case 1:  // Frequency
-                    settings.frequency -= 0.5f;
-                    if (settings.frequency < 137.0f) settings.frequency = 137.0f;
-                    settings.region = REGION_CUSTOM;
-                    break;
-                case 2:  // SF
-                    if (settings.spreadingFactor > SF_MIN) {
-                        settings.spreadingFactor--;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-                case 3:  // BW
-                    if (settings.bandwidth == BW_500) settings.bandwidth = BW_250;
-                    else if (settings.bandwidth == BW_250) settings.bandwidth = BW_125;
-                    else if (settings.bandwidth == BW_125) settings.bandwidth = BW_62_5;
-                    settings.region = REGION_CUSTOM;
-                    break;
-                case 4:  // CR
-                    if (settings.codingRate > 5) {
-                        settings.codingRate--;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-                case 5:  // TX Power
-                    if (settings.txPower > TX_POWER_MIN) {
-                        settings.txPower--;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-            }
-            needsRedraw = true;
-        }
-        if (!right && prevRight) {
-            // Increase value
-            switch (settingsMenuItem) {
-                case 0:  // Region
-                    if (settings.region < REGION_CUSTOM) {
-                        settings.setRegionPreset((LoRaRegion)(settings.region + 1));
-                    }
-                    break;
-                case 1:  // Frequency
-                    settings.frequency += 0.5f;
-                    if (settings.frequency > 1020.0f) settings.frequency = 1020.0f;
-                    settings.region = REGION_CUSTOM;
-                    break;
-                case 2:  // SF
-                    if (settings.spreadingFactor < SF_MAX) {
-                        settings.spreadingFactor++;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-                case 3:  // BW
-                    if (settings.bandwidth == BW_62_5) settings.bandwidth = BW_125;
-                    else if (settings.bandwidth == BW_125) settings.bandwidth = BW_250;
-                    else if (settings.bandwidth == BW_250) settings.bandwidth = BW_500;
-                    settings.region = REGION_CUSTOM;
-                    break;
-                case 4:  // CR
-                    if (settings.codingRate < 8) {
-                        settings.codingRate++;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-                case 5:  // TX Power
-                    if (settings.txPower < TX_POWER_MAX) {
-                        settings.txPower++;
-                        settings.region = REGION_CUSTOM;
-                    }
-                    break;
-            }
-            needsRedraw = true;
-        }
-    } else if (currentScreen == SCREEN_INPUT_TEST) {
-        // Input test trackball
-        if (!up && prevUp) {
-            trackballY = max(10, trackballY - 5);
-            needsRedraw = true;
-        }
-        if (!down && prevDown) {
-            trackballY = min(230, trackballY + 5);
-            needsRedraw = true;
-        }
-        if (!left && prevLeft) {
-            trackballX = max(10, trackballX - 5);
-            needsRedraw = true;
-        }
-        if (!right && prevRight) {
-            trackballX = min(310, trackballX + 5);
-            needsRedraw = true;
-        }
+        Screens.handleTrackball(upEdge, downEdge, leftEdge, rightEdge, clickEdge);
     }
 
     prevUp = up;
     prevDown = down;
     prevLeft = left;
     prevRight = right;
-
-    // Handle trackball click
-    if (!click && prevClick) {
-        if (currentScreen == SCREEN_INPUT_TEST) {
-            trackballX = 160;
-            trackballY = 120;
-            inputBuffer[0] = '\0';
-            inputPos = 0;
-            needsRedraw = true;
-        }
-    }
     prevClick = click;
-
-    // Redraw if needed
-    if (needsRedraw) {
-        switch (currentScreen) {
-            case SCREEN_INPUT_TEST: showInputTestScreen(); break;
-            case SCREEN_STATUS: showStatusScreen(); break;
-            case SCREEN_SETTINGS: showSettingsScreen(); break;
-        }
-        needsRedraw = false;
-    }
 }
 
 // =============================================================================
@@ -774,63 +648,92 @@ void handleInput() {
 void onMessageReceived(const Message& msg) {
     Serial.printf("[MSG] From %08X: %s\n", msg.senderId, msg.text);
 
-    // Add to messaging UI buffer
-    // Convert sender ID to a short name (first 4 hex chars)
-    char senderName[16];
-    snprintf(senderName, sizeof(senderName), "Node%04X", (uint16_t)(msg.senderId & 0xFFFF));
+    // Direct messages (non-channel) are handled here
+    // Note: Channel messages go through onChannelMessage callback instead
 
-    ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-    MessagingUI::addIncomingMessage(senderName, msg.text, millis(), chSettings.activeChannel);
+    // Show notification in status bar
+    Screens.showStatus("New message!", 3000);
 
-    // If on messages screen, refresh
-    if (currentScreen == SCREEN_MESSAGES) {
-        MessagingUI::show();
-    } else {
-        // Show notification on other screens
-        Display::fillRect(0, 160, Display::getWidth(), 40, COLOR_BACKGROUND);
-        Display::drawText(10, 160, "New message!", COLOR_ACCENT, 1);
-        Display::drawText(10, 180, msg.text, COLOR_TEXT, 1);
-    }
+    // Update notification count and badge
+    int unread = MessagesScreen::getUnreadCount();
+    Screens.setNotificationCount(unread);
+    homeScreen.setBadge(HOME_MESSAGES, unread);
+}
+
+void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp) {
+    Serial.printf("[CHANNEL] Ch%d: %s\n", channelIdx, senderAndText);
+
+    // Route to MessagesScreen for conversation tracking
+    MessagesScreen::onChannelMessage(channelIdx, senderAndText, timestamp);
+
+    // Show notification in status bar
+    Screens.showStatus("New message!", 3000);
+
+    // Update notification count and badge
+    int unread = MessagesScreen::getUnreadCount();
+    Screens.setNotificationCount(unread);
+    homeScreen.setBadge(HOME_MESSAGES, unread);
 }
 
 void onNodeDiscovered(const NodeInfo& node) {
     Serial.printf("[NODE] Discovered: %s (type=%d, RSSI: %d)\n", node.name, node.type, node.rssi);
 
     // Note: Contact saving with pubKey is handled in MeshBerryMesh::onAdvertRecv
-    // Don't duplicate here as it would overwrite the pubKey with empty data
-
-    // Refresh contacts screen if active
-    if (currentScreen == SCREEN_CONTACTS) {
-        ContactUI::show();
-    }
+    // StatusScreen will show updated node count on next draw
 }
 
 void onLoginResponse(bool success, uint8_t permissions, const char* repeaterName) {
     Serial.printf("[REPEATER] Login %s: perms=%d, name=%s\n",
                   success ? "SUCCESS" : "FAILED", permissions, repeaterName ? repeaterName : "?");
 
-    // Forward to ContactUI if it's in password input state
-    if (currentScreen == SCREEN_CONTACTS) {
-        ContactUI::State uiState = ContactUI::getState();
-        if (uiState == ContactUI::STATE_PASSWORD_INPUT || uiState == ContactUI::STATE_ADMIN_SESSION) {
-            if (success) {
-                ContactUI::onLoginSuccess();
-            } else {
-                ContactUI::onLoginFailed();
-            }
-        }
+    // Notify RepeaterAdminScreen
+    if (success) {
+        repeaterAdminScreen.onLoginSuccess(permissions);
+        Screens.showStatus("Login successful", 2000);
+    } else {
+        repeaterAdminScreen.onLoginFailed();
+        Screens.showStatus("Login failed", 2000);
     }
 }
 
 void onCLIResponse(const char* response) {
     Serial.printf("[REPEATER] CLI response: %s\n", response ? response : "(null)");
 
-    // Forward to ContactUI if it's in admin session state
-    if (currentScreen == SCREEN_CONTACTS) {
-        ContactUI::State uiState = ContactUI::getState();
-        if (uiState == ContactUI::STATE_ADMIN_SESSION) {
-            ContactUI::onCLIResponse(response);
-        }
+    // Route to CLI screen if it's the active screen
+    if (Screens.getCurrentScreenId() == ScreenId::REPEATER_CLI) {
+        _repeaterCLIScreen.onCLIResponse(response);
+    } else {
+        // Fallback to admin screen
+        repeaterAdminScreen.onCLIResponse(response);
+    }
+}
+
+void onDMReceived(uint32_t senderId, const char* senderName, const char* text, uint32_t timestamp) {
+    Serial.printf("[DM] From %s (%08X): %s\n", senderName ? senderName : "?", senderId, text ? text : "(null)");
+
+    if (!text) return;
+
+    // Store in DMSettings as incoming message
+    DMSettings& dms = SettingsManager::getDMSettings();
+    dms.addMessage(senderId, text, false, timestamp);
+
+    // Save DMs to persist the new message
+    SettingsManager::saveDMs();
+
+    // If DMChatScreen is open for this contact, update it
+    if (Screens.getCurrentScreenId() == ScreenId::DM_CHAT) {
+        DMChatScreen::addToCurrentChat(senderId, text, timestamp);
+    }
+
+    // Show notification
+    char notifyMsg[48];
+    snprintf(notifyMsg, sizeof(notifyMsg), "DM from %s", senderName ? senderName : "Unknown");
+    Screens.showStatus(notifyMsg, 3000);
+
+    // Update notification count - count total unread DMs
+    int unread = dms.getTotalUnreadCount();
+    if (unread > 0) {
+        Screens.setNotificationCount(unread);
     }
 }
 
@@ -888,6 +791,11 @@ void processCommand(const char* cmd) {
         Serial.println("  saved               - List saved credentials");
         Serial.println("  clear contacts      - Delete all contacts");
         Serial.println("  dump contacts       - Show raw contacts.json file");
+        Serial.println();
+        Serial.println("Time Management:");
+        Serial.println("  time                - Show current RTC time");
+        Serial.println("  time <epoch>        - Set RTC to UNIX timestamp");
+        Serial.println("  time sync           - Sync RTC from GPS");
     }
     // status - Show node info
     else if (strcmp(cmd, "status") == 0) {
@@ -1242,6 +1150,62 @@ void processCommand(const char* cmd) {
             }
         } else {
             Serial.println("[CLI] /contacts.json does not exist");
+        }
+    }
+    // ==========================================================================
+    // TIME MANAGEMENT COMMANDS
+    // ==========================================================================
+    // time - Show current RTC time
+    else if (strcmp(cmd, "time") == 0) {
+        uint32_t epoch = rtcClock.getCurrentTime();
+        Serial.printf("Current RTC time: %u (UNIX epoch)\n", epoch);
+        Serial.printf("GPS sync status: %s\n", rtcSyncedFromGps ? "synced" : "not synced");
+    }
+    // time sync - Sync from GPS
+    else if (strcmp(cmd, "time sync") == 0) {
+        if (!gpsPresent) {
+            Serial.println("GPS not available on this device.");
+        } else if (!GPS::hasValidTime() || !GPS::hasValidDate()) {
+            Serial.println("GPS does not have valid time yet. Wait for satellite lock.");
+        } else {
+            uint8_t hour, minute, second;
+            uint8_t day, month;
+            uint16_t year;
+
+            if (GPS::getTime(&hour, &minute, &second) && GPS::getDate(&day, &month, &year)) {
+                // Sanity check: GPS may report "valid" before having real data
+                if (year < 2024 || month < 1 || month > 12 || day < 1 || day > 31) {
+                    Serial.printf("GPS time not reliable yet (year=%d). Wait for full satellite lock.\n", year);
+                } else {
+                    uint32_t gpsEpoch = makeUnixTime(year, month, day, hour, minute, second);
+                    rtcClock.setCurrentTime(gpsEpoch);
+                    rtcSyncedFromGps = true;
+                    Serial.printf("RTC synced from GPS: %u (UTC %04d-%02d-%02d %02d:%02d:%02d)\n",
+                                  gpsEpoch, year, month, day, hour, minute, second);
+                }
+            } else {
+                Serial.println("Failed to read GPS time.");
+            }
+        }
+    }
+    // time <epoch> - Set RTC to specific UNIX timestamp
+    else if (strncmp(cmd, "time ", 5) == 0) {
+        const char* arg = cmd + 5;
+        while (*arg == ' ') arg++;
+
+        if (strlen(arg) == 0) {
+            Serial.println("Usage: time <unix_epoch>");
+            Serial.println("       time sync        - Sync from GPS");
+            Serial.println("Get current epoch at: https://www.unixtimestamp.com/");
+        } else {
+            uint32_t epoch = strtoul(arg, nullptr, 10);
+            if (epoch > 1700000000) {  // Sanity check (after Nov 2023)
+                rtcClock.setCurrentTime(epoch);
+                Serial.printf("RTC set to: %u\n", epoch);
+            } else {
+                Serial.println("Invalid timestamp. Must be > 1700000000 (after Nov 2023)");
+                Serial.println("Get current epoch at: https://www.unixtimestamp.com/");
+            }
         }
     }
     // Unknown command

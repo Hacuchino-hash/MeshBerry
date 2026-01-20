@@ -49,15 +49,12 @@ static ChatMessage* getMessageAt(int idx) {
     return &messageBuffer[actualIdx];
 }
 
-// Count messages for current channel
+// Count messages for channel 0 (Public) - legacy function
 static int countChannelMessages() {
-    ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-    uint8_t activeChannel = chSettings.activeChannel;
-
     int count = 0;
     for (int i = 0; i < messageCount; i++) {
         ChatMessage* msg = getMessageAt(i);
-        if (msg && msg->channelIdx == activeChannel) {
+        if (msg && msg->channelIdx == 0) {
             count++;
         }
     }
@@ -74,12 +71,9 @@ void show() {
     Display::clear(COLOR_BACKGROUND);
 
     ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-    const ChannelEntry* activeCh = chSettings.getActiveChannel();
 
-    // Header with channel name
-    char header[48];
-    snprintf(header, sizeof(header), "Messages - %s", activeCh ? activeCh->name : "None");
-    Display::drawText(10, 10, header, COLOR_ACCENT, 2);
+    // Header - legacy UI, show "Messages - Public"
+    Display::drawText(10, 10, "Messages - Public", COLOR_ACCENT, 2);
 
     // Draw messages area (y: 40 to 170)
     const int msgAreaTop = 40;
@@ -87,13 +81,13 @@ void show() {
     const int lineHeight = 16;
     const int maxVisibleLines = msgAreaHeight / lineHeight;
 
-    // Collect messages for current channel
+    // Collect messages for channel 0 (Public) - legacy
     int channelMsgCount = 0;
     int channelMsgIndices[MSG_UI_MAX_MESSAGES];
 
     for (int i = 0; i < messageCount; i++) {
         ChatMessage* msg = getMessageAt(i);
-        if (msg && msg->channelIdx == chSettings.activeChannel) {
+        if (msg && msg->channelIdx == 0) {
             channelMsgIndices[channelMsgCount++] = i;
         }
     }
@@ -167,9 +161,8 @@ bool handleKey(uint8_t key) {
         if (inputPos > 0 && sendCallback) {
             sendCallback(inputBuffer);
 
-            // Add to local display
-            ChannelSettings& chSettings = SettingsManager::getChannelSettings();
-            addOutgoingMessage(inputBuffer, millis(), chSettings.activeChannel);
+            // Add to local display (legacy - always channel 0)
+            addOutgoingMessage(inputBuffer, millis(), 0);
 
             // Clear input
             inputBuffer[0] = '\0';

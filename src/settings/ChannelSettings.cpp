@@ -18,7 +18,6 @@ void ChannelSettings::setDefaults() {
     }
 
     numChannels = 0;
-    activeChannel = 0;
 
     // Add default Public channel
     addChannel("Public", PUBLIC_CHANNEL_PSK);
@@ -108,16 +107,6 @@ bool ChannelSettings::removeChannel(int idx) {
     channels[numChannels - 1].clear();
     numChannels--;
 
-    // Adjust active channel if needed
-    if (activeChannel >= numChannels) {
-        activeChannel = numChannels - 1;
-    }
-    if (activeChannel == idx) {
-        activeChannel = 0;  // Fall back to Public
-    } else if (activeChannel > idx) {
-        activeChannel--;
-    }
-
     return true;
 }
 
@@ -130,32 +119,9 @@ int ChannelSettings::findChannel(const char* name) const {
     return -1;
 }
 
-ChannelEntry* ChannelSettings::getActiveChannel() {
-    if (activeChannel < numChannels) {
-        return &channels[activeChannel];
-    }
-    return nullptr;
-}
-
-const ChannelEntry* ChannelSettings::getActiveChannel() const {
-    if (activeChannel < numChannels) {
-        return &channels[activeChannel];
-    }
-    return nullptr;
-}
-
-bool ChannelSettings::setActiveChannel(int idx) {
-    if (idx >= 0 && idx < numChannels && channels[idx].isActive) {
-        activeChannel = idx;
-        return true;
-    }
-    return false;
-}
-
 bool ChannelSettings::isValid() const {
     if (magic != CHANNEL_MAGIC) return false;
     if (numChannels > MAX_CHANNELS) return false;
-    if (activeChannel >= numChannels && numChannels > 0) return false;
 
     // Verify at least Public channel exists
     if (numChannels == 0) return false;
