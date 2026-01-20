@@ -67,6 +67,7 @@
 #include "ui/ChannelsScreen.h"
 #include "ui/GpsScreen.h"
 #include "ui/PlaceholderScreen.h"
+#include "ui/AboutScreen.h"
 #include "ui/RepeaterAdminScreen.h"
 #include "ui/RepeaterCLIScreen.h"
 #include "ui/DMChatScreen.h"
@@ -117,7 +118,7 @@ RepeaterAdminScreen repeaterAdminScreen;  // Non-static - accessed by ContactsSc
 RepeaterCLIScreen* repeaterCLIScreen = nullptr;  // Pointer for external access
 static RepeaterCLIScreen _repeaterCLIScreen;  // Actual instance
 DMChatScreen dmChatScreen;  // Non-static - accessed by ContactsScreen
-static AboutPlaceholder aboutScreen("About");
+static AboutScreen aboutScreen;
 
 // CLI state
 static char cmdBuffer[128] = "";

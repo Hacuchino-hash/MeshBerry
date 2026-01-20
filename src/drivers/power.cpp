@@ -51,16 +51,19 @@ void init() {
                 Serial.println("[POWER] Wake reason: Timer");
                 break;
 
+            case ESP_SLEEP_WAKEUP_EXT0:
+                // EXT0 is used for button (GPIO 0, active LOW)
+                wakeReason = WAKE_BUTTON;
+                Serial.println("[POWER] Wake reason: Button press (EXT0)");
+                break;
+
             case ESP_SLEEP_WAKEUP_EXT1: {
-                // Check which GPIO triggered the wake
+                // EXT1 is used for LoRa DIO1 (active HIGH)
                 uint64_t wakeupStatus = esp_sleep_get_ext1_wakeup_status();
 
                 if (wakeupStatus & (1ULL << PIN_LORA_DIO1)) {
                     wakeReason = WAKE_LORA_PACKET;
-                    Serial.println("[POWER] Wake reason: LoRa packet");
-                } else if (wakeupStatus & (1ULL << PIN_TRACKBALL_CLICK)) {
-                    wakeReason = WAKE_BUTTON;
-                    Serial.println("[POWER] Wake reason: Button press");
+                    Serial.println("[POWER] Wake reason: LoRa packet (EXT1)");
                 } else {
                     wakeReason = WAKE_UNKNOWN;
                     Serial.printf("[POWER] Wake reason: Unknown EXT1 (status=0x%llx)\n", wakeupStatus);
@@ -131,6 +134,7 @@ void releaseRtcGpioHolds() {
     // Deinitialize RTC GPIOs to return to normal mode
     rtc_gpio_deinit((gpio_num_t)PIN_LORA_DIO1);
     rtc_gpio_deinit((gpio_num_t)PIN_LORA_CS);
+    rtc_gpio_deinit((gpio_num_t)PIN_TRACKBALL_CLICK);
 
     Serial.println("[POWER] RTC GPIO holds released");
 }
@@ -152,30 +156,26 @@ void enterDeepSleep(uint32_t timerSecs, bool wakeOnButton, bool wakeOnLoRa) {
     // Keep RTC peripherals powered for wake functionality
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    // Build wake source mask
-    uint64_t wakeMask = 0;
-
-    if (wakeOnLoRa) {
-        wakeMask |= (1ULL << PIN_LORA_DIO1);
-        Serial.println("[POWER] LoRa wake enabled (DIO1)");
-    }
-
+    // Configure button wake using EXT0 (supports LOW level wake)
+    // GPIO 0 (trackball click / BOOT) is active LOW
     if (wakeOnButton) {
-        // Configure trackball click as RTC GPIO
+        // Configure trackball click as RTC GPIO with pullup
         rtc_gpio_init((gpio_num_t)PIN_TRACKBALL_CLICK);
         rtc_gpio_set_direction((gpio_num_t)PIN_TRACKBALL_CLICK, RTC_GPIO_MODE_INPUT_ONLY);
-        // Button is active LOW, so we need pullup and wake on LOW
-        // But ext1 only supports ANY_HIGH, so we may need ext0 for button
-        // For now, try with ANY_HIGH (button might have external pulldown)
-        wakeMask |= (1ULL << PIN_TRACKBALL_CLICK);
-        Serial.println("[POWER] Button wake enabled (GPIO 0)");
+        rtc_gpio_pullup_en((gpio_num_t)PIN_TRACKBALL_CLICK);
+        rtc_gpio_pulldown_dis((gpio_num_t)PIN_TRACKBALL_CLICK);
+
+        // Use EXT0 for button wake on LOW level
+        // EXT0 allows single GPIO wake on either HIGH or LOW
+        esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_TRACKBALL_CLICK, 0);  // 0 = wake on LOW
+        Serial.println("[POWER] Button wake enabled (GPIO 0, LOW level via EXT0)");
     }
 
-    // Enable EXT1 wake (multiple GPIO sources)
-    if (wakeMask != 0) {
-        // Note: ESP_EXT1_WAKEUP_ANY_HIGH means wake when ANY of the pins go HIGH
-        // The trackball click on T-Deck may need different configuration
-        esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_HIGH);
+    // Configure LoRa wake using EXT1 (LoRa DIO1 goes HIGH on packet)
+    if (wakeOnLoRa) {
+        uint64_t loraWakeMask = (1ULL << PIN_LORA_DIO1);
+        esp_sleep_enable_ext1_wakeup(loraWakeMask, ESP_EXT1_WAKEUP_ANY_HIGH);
+        Serial.println("[POWER] LoRa wake enabled (DIO1, HIGH level via EXT1)");
     }
 
     // Enable timer wake if requested

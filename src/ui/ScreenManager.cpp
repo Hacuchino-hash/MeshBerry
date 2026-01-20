@@ -166,8 +166,11 @@ void ScreenManager::handleKey(uint8_t keyCode, char keyChar) {
     InputData input;
 
     // Map keys to soft key events
-    if (keyCode == KEY_ESC || keyCode == KEY_BACKSPACE) {
-        // Right soft key: Back
+    // NOTE: Backspace is passed as KEY_PRESS so text input screens can use it
+    // for deleting characters. Screens without text input can check for backspace
+    // in their handleInput and treat it as back navigation if desired.
+    if (keyCode == KEY_ESC) {
+        // ESC key: Back navigation
         input.event = InputEvent::SOFTKEY_RIGHT;
         SoftKeyBar::setHighlight(SoftKeyBar::KEY_RIGHT, true);
     } else if (keyCode == KEY_ENTER) {

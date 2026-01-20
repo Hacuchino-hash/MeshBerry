@@ -9,6 +9,7 @@
 #include "SoftKeyBar.h"
 #include "../drivers/display.h"
 #include "../drivers/gps.h"
+#include "../drivers/keyboard.h"
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
@@ -266,9 +267,12 @@ void GpsScreen::draw(bool fullRedraw) {
 }
 
 bool GpsScreen::handleInput(const InputData& input) {
+    // Treat backspace as back since this screen has no text input
+    bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
     if (input.event == InputEvent::BACK ||
         input.event == InputEvent::SOFTKEY_RIGHT ||
-        input.event == InputEvent::TRACKBALL_LEFT) {
+        input.event == InputEvent::TRACKBALL_LEFT ||
+        isBackKey) {
         Screens.goBack();
         return true;
     }

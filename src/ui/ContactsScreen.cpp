@@ -162,9 +162,12 @@ bool ContactsScreen::handleInput(const InputData& input) {
     }
 
     // Right soft key or Back: go back
+    // Treat backspace as back since this screen has no text input
+    bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
     if (input.event == InputEvent::SOFTKEY_RIGHT ||
         input.event == InputEvent::BACK ||
-        input.event == InputEvent::TRACKBALL_LEFT) {
+        input.event == InputEvent::TRACKBALL_LEFT ||
+        isBackKey) {
         Screens.goBack();
         return true;
     }
