@@ -39,6 +39,7 @@ const char* SettingsScreen::getTitle() const {
         case SETTINGS_DISPLAY: return "Display";
         case SETTINGS_NETWORK: return "Network";
         case SETTINGS_GPS:     return "GPS Settings";
+        case SETTINGS_POWER:   return "Power Saving";
         case SETTINGS_ABOUT:   return "About";
         default:               return "Settings";
     }
@@ -49,7 +50,7 @@ void SettingsScreen::configureSoftKeys() {
         SoftKeyBar::setLabels("<", "OK", ">");
     } else if (_currentLevel == SETTINGS_MAIN) {
         SoftKeyBar::setLabels(nullptr, "Select", "Back");
-    } else if (_currentLevel == SETTINGS_GPS) {
+    } else if (_currentLevel == SETTINGS_GPS || _currentLevel == SETTINGS_POWER) {
         SoftKeyBar::setLabels(nullptr, "Toggle", "Back");
     } else {
         SoftKeyBar::setLabels(nullptr, "Edit", "Back");
@@ -68,9 +69,10 @@ void SettingsScreen::buildMenu() {
             _menuItems[0] = { "Radio", "Frequency, power, spreading", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[1] = { "Display", "Brightness, timeout", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[2] = { "Network", "Node name, forwarding", Icons::CONTACTS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[3] = { "GPS", "Power, RTC sync options", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[4] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItemCount = 5;
+            _menuItems[3] = { "GPS", "Power, RTC sync options", Icons::GPS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[4] = { "Power", "Deep sleep, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[5] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItemCount = 6;
             break;
 
         case SETTINGS_RADIO:
@@ -125,6 +127,44 @@ void SettingsScreen::buildMenu() {
                               false, 0, nullptr };
 
             _menuItemCount = 2;
+            break;
+        }
+
+        case SETTINGS_POWER: {
+            // Power saving settings
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+
+            _menuItems[0] = { "Power Saving",
+                              device.powerSavingEnabled ? "On" : "Off",
+                              nullptr,
+                              device.powerSavingEnabled ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            // Sleep timeout (convert seconds to readable format)
+            if (device.sleepTimeoutSecs < 60) {
+                snprintf(_valueStrings[1], 32, "%d sec", device.sleepTimeoutSecs);
+            } else {
+                snprintf(_valueStrings[1], 32, "%d min", device.sleepTimeoutSecs / 60);
+            }
+            _menuItems[1] = { "Sleep After",
+                              _valueStrings[1],
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[2] = { "Wake on LoRa",
+                              device.wakeOnLoRa ? "On" : "Off",
+                              nullptr,
+                              device.wakeOnLoRa ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            _menuItems[3] = { "Wake on Button",
+                              device.wakeOnButton ? "On" : "Off",
+                              nullptr,
+                              device.wakeOnButton ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            _menuItemCount = 4;
             break;
         }
 
@@ -313,7 +353,8 @@ void SettingsScreen::onItemSelected(int index) {
                 case 1: _currentLevel = SETTINGS_DISPLAY; break;
                 case 2: _currentLevel = SETTINGS_NETWORK; break;
                 case 3: _currentLevel = SETTINGS_GPS; break;
-                case 4: _currentLevel = SETTINGS_ABOUT; break;
+                case 4: _currentLevel = SETTINGS_POWER; break;
+                case 5: _currentLevel = SETTINGS_ABOUT; break;
             }
             buildMenu();
             configureSoftKeys();
@@ -342,6 +383,37 @@ void SettingsScreen::onItemSelected(int index) {
                     break;
                 case 1:  // RTC Auto-Sync
                     device.gpsRtcSyncEnabled = !device.gpsRtcSyncEnabled;
+                    break;
+            }
+            SettingsManager::saveDeviceSettings();
+            buildMenu();
+            requestRedraw();
+            break;
+        }
+
+        case SETTINGS_POWER: {
+            // Toggle power saving settings
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+            switch (index) {
+                case 0:  // Power Saving Enable
+                    device.powerSavingEnabled = !device.powerSavingEnabled;
+                    break;
+                case 1:  // Sleep After (cycle through values: 1, 2, 5, 10 minutes)
+                    if (device.sleepTimeoutSecs <= 60) {
+                        device.sleepTimeoutSecs = 120;    // 2 min
+                    } else if (device.sleepTimeoutSecs <= 120) {
+                        device.sleepTimeoutSecs = 300;    // 5 min
+                    } else if (device.sleepTimeoutSecs <= 300) {
+                        device.sleepTimeoutSecs = 600;    // 10 min
+                    } else {
+                        device.sleepTimeoutSecs = 60;     // Back to 1 min
+                    }
+                    break;
+                case 2:  // Wake on LoRa
+                    device.wakeOnLoRa = !device.wakeOnLoRa;
+                    break;
+                case 3:  // Wake on Button
+                    device.wakeOnButton = !device.wakeOnButton;
                     break;
             }
             SettingsManager::saveDeviceSettings();

@@ -629,12 +629,23 @@ static bool loadDevice() {
     }
 
     deviceSettings.magic = magic;
+
+    // GPS settings
     deviceSettings.gpsEnabled = doc["gpsEnabled"] | false;
     deviceSettings.gpsRtcSyncEnabled = doc["gpsRtcSyncEnabled"] | true;
+
+    // Display settings
     deviceSettings.backlightTimeout = doc["backlightTimeout"] | 30;
 
-    Serial.printf("[SETTINGS] Device settings loaded: gpsEnabled=%d, gpsRtcSync=%d\n",
-                  deviceSettings.gpsEnabled, deviceSettings.gpsRtcSyncEnabled);
+    // Power saving settings
+    deviceSettings.powerSavingEnabled = doc["powerSavingEnabled"] | false;
+    deviceSettings.sleepTimeoutSecs = doc["sleepTimeoutSecs"] | 120;
+    deviceSettings.sleepDurationSecs = doc["sleepDurationSecs"] | 1800;
+    deviceSettings.wakeOnLoRa = doc["wakeOnLoRa"] | true;
+    deviceSettings.wakeOnButton = doc["wakeOnButton"] | true;
+
+    Serial.printf("[SETTINGS] Device settings loaded: gpsEnabled=%d, gpsRtcSync=%d, powerSave=%d\n",
+                  deviceSettings.gpsEnabled, deviceSettings.gpsRtcSyncEnabled, deviceSettings.powerSavingEnabled);
     return true;
 }
 
@@ -648,9 +659,20 @@ static bool saveDeviceInternal() {
     JsonDocument doc;
 
     doc["magic"] = deviceSettings.magic;
+
+    // GPS settings
     doc["gpsEnabled"] = deviceSettings.gpsEnabled;
     doc["gpsRtcSyncEnabled"] = deviceSettings.gpsRtcSyncEnabled;
+
+    // Display settings
     doc["backlightTimeout"] = deviceSettings.backlightTimeout;
+
+    // Power saving settings
+    doc["powerSavingEnabled"] = deviceSettings.powerSavingEnabled;
+    doc["sleepTimeoutSecs"] = deviceSettings.sleepTimeoutSecs;
+    doc["sleepDurationSecs"] = deviceSettings.sleepDurationSecs;
+    doc["wakeOnLoRa"] = deviceSettings.wakeOnLoRa;
+    doc["wakeOnButton"] = deviceSettings.wakeOnButton;
 
     if (serializeJson(doc, file) == 0) {
         Serial.println("[SETTINGS] Failed to write device settings");

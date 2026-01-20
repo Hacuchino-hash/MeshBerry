@@ -23,6 +23,7 @@ enum SettingsLevel {
     SETTINGS_DISPLAY,
     SETTINGS_NETWORK,
     SETTINGS_GPS,
+    SETTINGS_POWER,
     SETTINGS_ABOUT
 };
 

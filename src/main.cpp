@@ -38,6 +38,7 @@
 #include "drivers/lora.h"
 #include "drivers/gps.h"
 #include "drivers/audio.h"
+#include "drivers/power.h"
 
 // MeshCore integration
 #include <RadioLib.h>
@@ -189,6 +190,9 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    // Initialize power management FIRST to detect wake reason
+    Power::init();
+
     Serial.println();
     Serial.println("====================================");
     Serial.println("  MeshBerry v" MESHBERRY_VERSION);
@@ -196,6 +200,7 @@ void setup() {
     Serial.println("  GPL-3.0-or-later License");
     Serial.println("  (C) 2026 NodakMesh");
     Serial.println("====================================");
+    Serial.printf("  Wake reason: %s\n", Power::getWakeReasonString());
     Serial.println();
 
     // Initialize file system
@@ -324,6 +329,39 @@ void loop() {
     if (!backlightDimmed && (millis() - lastActivityTime > BACKLIGHT_TIMEOUT_MS)) {
         Keyboard::setBacklight(false);
         backlightDimmed = true;
+    }
+
+    // Deep sleep power saving mode
+    DeviceSettings& devicePower = SettingsManager::getDeviceSettings();
+    if (devicePower.powerSavingEnabled) {
+        uint32_t inactiveMs = millis() - lastActivityTime;
+
+        // Check if time to enter deep sleep
+        if (inactiveMs > (devicePower.sleepTimeoutSecs * 1000UL)) {
+            if (Power::safeToSleep()) {
+                Serial.println("[POWER] Entering deep sleep due to inactivity...");
+
+                // Save any pending state
+                SettingsManager::saveDeviceSettings();
+
+                // Prepare peripherals for sleep
+                Power::prepareLoRaForSleep();
+                Display::backlightOff();  // Turn off display
+                Keyboard::setBacklight(false);
+
+                Serial.printf("[POWER] Will wake on: %s%s%s\n",
+                              devicePower.wakeOnLoRa ? "LoRa " : "",
+                              devicePower.wakeOnButton ? "Button " : "",
+                              devicePower.sleepDurationSecs > 0 ? "Timer" : "");
+
+                // Enter deep sleep - does not return
+                Power::enterDeepSleep(
+                    devicePower.sleepDurationSecs,
+                    devicePower.wakeOnButton,
+                    devicePower.wakeOnLoRa
+                );
+            }
+        }
     }
 
     // Handle serial CLI commands
