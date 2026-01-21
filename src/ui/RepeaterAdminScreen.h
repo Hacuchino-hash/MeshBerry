@@ -6,8 +6,8 @@
  *
  * Dedicated screen for repeater administration:
  * - Login/logout
- * - Send commands (status, uptime, reboot, custom)
- * - Configure settings (advert interval, flood, zero hop)
+ * - Send commands (version, name, reboot, custom)
+ * - Configure settings (advert interval, repeat mode, TX power)
  * - View CLI responses
  */
 
@@ -88,9 +88,9 @@ private:
     int _settingValuePos = 0;
 
     // Cached settings from repeater
-    int _advertInterval = 0;    // seconds
-    bool _floodEnabled = false;
-    bool _zeroHopEnabled = false;
+    int _advertInterval = 0;    // minutes
+    bool _repeatEnabled = false; // forwarding on/off
+    int _txPower = 0;           // dBm
     bool _settingsLoaded = false;
 
     // Response display
@@ -99,9 +99,9 @@ private:
 
     // Status info
     char _statusName[32];
-    char _statusUptime[32];
+    char _statusVersion[48];
     char _statusFreq[16];
-    char _statusTxPower[8];
+    char _statusTxPowerStr[8];
 
     // Predefined commands
     struct Command {

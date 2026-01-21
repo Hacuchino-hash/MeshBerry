@@ -27,6 +27,8 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <SPIFFS.h>
+#include <driver/gpio.h>
+#include <soc/gpio_reg.h>  // For direct GPIO register read (GPIO 0 workaround)
 #include "config.h"
 
 // Board abstraction
@@ -39,6 +41,7 @@
 #include "drivers/gps.h"
 #include "drivers/audio.h"
 #include "drivers/power.h"
+#include "drivers/touch.h"
 
 // MeshCore integration
 #include <RadioLib.h>
@@ -54,6 +57,10 @@
 #include "settings/RadioSettings.h"
 #include "settings/ChannelSettings.h"
 #include "settings/SettingsManager.h"
+#include "settings/MessageArchive.h"
+
+// Drivers
+#include "drivers/storage.h"
 
 // New UI system
 #include "ui/Theme.h"
@@ -68,9 +75,11 @@
 #include "ui/GpsScreen.h"
 #include "ui/PlaceholderScreen.h"
 #include "ui/AboutScreen.h"
+#include "ui/EmojiPickerScreen.h"
 #include "ui/RepeaterAdminScreen.h"
 #include "ui/RepeaterCLIScreen.h"
 #include "ui/DMChatScreen.h"
+#include "ui/DMSettingsScreen.h"
 #include "ui/BootLogo.h"
 
 // =============================================================================
@@ -100,10 +109,18 @@ static const uint32_t ADVERT_INTERVAL_MS = 300000;  // 5 minutes
 static bool rtcSyncedFromGps = false;  // Track if we've synced RTC from GPS
 static bool timezoneSynced = false;    // Track if timezone calculated from GPS
 
-// Backlight timeout
-static uint32_t lastActivityTime = 0;
-static bool backlightDimmed = false;
-static const uint32_t BACKLIGHT_TIMEOUT_MS = 30000;  // 30 seconds
+// NOTE: Power management state (lastActivityTime, backlight, sleep) is now
+// handled by the Power module's FSM. See Power::updatePowerState().
+
+// Battery and charging monitoring
+static uint32_t lastBatteryCheckTime = 0;
+static const uint32_t BATTERY_CHECK_INTERVAL_MS = 10000;  // Check every 10 seconds
+static uint8_t lastBatteryPercent = 100;
+static uint16_t lastBatteryMV = 4200;
+static bool lowBatteryAlerted = false;  // Only alert once per low battery event
+static const uint8_t LOW_BATTERY_THRESHOLD = 15;  // Alert at 15%
+static const uint16_t CHARGING_VOLTAGE_THRESHOLD = 4300;  // Likely charging if > 4.3V
+static bool wasCharging = false;  // Track charging state for change detection
 
 // Screen instances for new UI system
 static HomeScreen homeScreen;
@@ -118,7 +135,9 @@ RepeaterAdminScreen repeaterAdminScreen;  // Non-static - accessed by ContactsSc
 RepeaterCLIScreen* repeaterCLIScreen = nullptr;  // Pointer for external access
 static RepeaterCLIScreen _repeaterCLIScreen;  // Actual instance
 DMChatScreen dmChatScreen;  // Non-static - accessed by ContactsScreen
+DMSettingsScreen dmSettingsScreen;  // Non-static - accessed by DMChatScreen
 static AboutScreen aboutScreen;
+EmojiPickerScreen emojiPickerScreen;  // Non-static - accessed by ChatScreen
 
 // CLI state
 static char cmdBuffer[128] = "";
@@ -140,8 +159,10 @@ void onMessageReceived(const Message& msg);
 void onNodeDiscovered(const NodeInfo& node);
 void onLoginResponse(bool success, uint8_t permissions, const char* repeaterName);
 void onCLIResponse(const char* response);
-void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp);
+void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops);
 void onDMReceived(uint32_t senderId, const char* senderName, const char* text, uint32_t timestamp);
+void onDMDeliveryStatus(uint32_t contactId, uint32_t ack_crc, bool delivered, uint8_t attempts);
+void onChannelRepeat(int channelIdx, uint32_t contentHash, uint8_t repeatCount);
 
 // =============================================================================
 // HELPER FUNCTIONS
@@ -217,6 +238,15 @@ void setup() {
     Serial.printf("  Region: %s\n", settings.getRegionName());
     Serial.printf("  LoRa Freq: %.3f MHz\n", settings.frequency);
 
+    // Initialize storage driver (SD card with SPIFFS fallback)
+    Storage::init();
+    Serial.printf("[INIT] Storage: %s (%d KB free)\n",
+                  Storage::getStorageType(),
+                  Storage::getAvailableSpace() / 1024);
+
+    // Initialize message archive
+    MessageArchive::init();
+
     // Initialize hardware
     initHardware();
 
@@ -240,11 +270,24 @@ void setup() {
     Screens.setBatteryPercent(board.getBatteryPercent());
     Screens.setGpsStatus(gpsPresent, false);
 
-    // Initialize activity timer for backlight timeout
-    lastActivityTime = millis();
+    // Initialize power FSM activity timer (handled by Power::init())
 
     // Navigate to home screen
     Screens.navigateTo(ScreenId::HOME, false);
+
+    // CRITICAL: Reset strapping pin GPIOs one final time AFTER all initialization
+    // The RTC GPIO state can persist across soft resets and may have been corrupted
+    // by previous sleep wake configuration. Resetting here ensures they're clean
+    // before the main loop starts reading them.
+    // GPIO 0 = trackball click (BOOT strapping pin)
+    // GPIO 1 = trackball left (UART strapping pin)
+    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
+    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
+    pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
+    pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
+    delay(5);  // Allow pullups to stabilize
+    Serial.printf("[INIT] Final GPIO reset - click(0)=%d left(1)=%d (should be 1)\n",
+                  digitalRead(PIN_TRACKBALL_CLICK), digitalRead(PIN_TRACKBALL_LEFT));
 
     Serial.println();
     Serial.println("[BOOT] MeshBerry ready!");
@@ -326,44 +369,68 @@ void loop() {
         lastMinute = currentMinute;
     }
 
-    // Keyboard backlight timeout
-    if (!backlightDimmed && (millis() - lastActivityTime > BACKLIGHT_TIMEOUT_MS)) {
-        Keyboard::setBacklight(false);
-        backlightDimmed = true;
-    }
+    // Battery monitoring and audio alerts
+    if (millis() - lastBatteryCheckTime > BATTERY_CHECK_INTERVAL_MS) {
+        lastBatteryCheckTime = millis();
 
-    // Deep sleep power saving mode
-    DeviceSettings& devicePower = SettingsManager::getDeviceSettings();
-    if (devicePower.powerSavingEnabled) {
-        uint32_t inactiveMs = millis() - lastActivityTime;
+        uint8_t batteryPercent = board.getBatteryPercent();
+        uint16_t batteryMV = board.getBattMilliVolts();
 
-        // Check if time to enter deep sleep
-        if (inactiveMs > (devicePower.sleepTimeoutSecs * 1000UL)) {
-            if (Power::safeToSleep()) {
-                Serial.println("[POWER] Entering deep sleep due to inactivity...");
+        // Update status bar
+        Screens.setBatteryPercent(batteryPercent);
 
-                // Save any pending state
-                SettingsManager::saveDeviceSettings();
+        // Detect charging state (voltage > 4.3V typically means USB power connected)
+        bool isCharging = (batteryMV > CHARGING_VOLTAGE_THRESHOLD);
 
-                // Prepare peripherals for sleep
-                Power::prepareLoRaForSleep();
-                Display::backlightOff();  // Turn off display
-                Keyboard::setBacklight(false);
+        // Get audio settings for tone selection
+        DeviceSettings& audioSettings = SettingsManager::getDeviceSettings();
 
-                Serial.printf("[POWER] Will wake on: %s%s%s\n",
-                              devicePower.wakeOnLoRa ? "LoRa " : "",
-                              devicePower.wakeOnButton ? "Button " : "",
-                              devicePower.sleepDurationSecs > 0 ? "Timer" : "");
-
-                // Enter deep sleep - does not return
-                Power::enterDeepSleep(
-                    devicePower.sleepDurationSecs,
-                    devicePower.wakeOnButton,
-                    devicePower.wakeOnLoRa
-                );
-            }
+        // Note: Removed charging tones - they cause wake/beep loops
+        // when device wakes from sleep while plugged in
+        if (isCharging && !wasCharging) {
+            Serial.println("[POWER] Charger connected");
         }
+        if (isCharging && batteryPercent >= 99 && lastBatteryPercent < 99) {
+            Serial.println("[POWER] Charging complete");
+        }
+
+        // Low battery alert (only once per low battery event)
+        if (batteryPercent <= LOW_BATTERY_THRESHOLD && !lowBatteryAlerted && !isCharging) {
+            Serial.printf("[POWER] Low battery warning: %d%%\n", batteryPercent);
+            Audio::playAlertTone(audioSettings.toneLowBattery);
+            lowBatteryAlerted = true;
+        }
+
+        // Reset low battery alert flag when battery recovers (charging)
+        if (batteryPercent > LOW_BATTERY_THRESHOLD + 5) {
+            lowBatteryAlerted = false;
+        }
+
+        lastBatteryPercent = batteryPercent;
+        lastBatteryMV = batteryMV;
+        wasCharging = isCharging;
     }
+
+    // Power management - Meshtastic-style FSM handles screen timeout and sleep
+    // Configuration from DeviceSettings:
+    // - screenTimeoutSecs (30): seconds until screen turns off
+    // - sleepTimeoutSecs (300): seconds after screen off until sleep entry
+    // - sleepIntervalSecs (30): duration of each light sleep cycle
+    // - minWakeSecs (10): minimum wake time after LoRa packet
+    // - wakeOnLoRa: enable LoRa wake source
+    DeviceSettings& devicePower = SettingsManager::getDeviceSettings();
+
+    // Default screen timeout to 30 seconds if not configured
+    uint32_t screenTimeout = 30;
+
+    // sleepTimeoutSecs = 0 disables sleep
+    Power::updatePowerState(
+        screenTimeout,
+        devicePower.sleepTimeoutSecs,
+        30,  // sleepIntervalSecs - 30 second sleep cycles (Meshtastic default)
+        10,  // minWakeSecs - 10 seconds min wake for LoRa processing
+        devicePower.wakeOnLoRa
+    );
 
     // Handle serial CLI commands
     handleSerialCLI();
@@ -384,6 +451,12 @@ void loop() {
 
 void initHardware() {
     Serial.println("[INIT] Starting hardware initialization...");
+
+    // FIRST: Reset GPIO 0 in case RTC domain corrupted it from previous sleep
+    // GPIO 0 is the ESP32-S3 BOOT strapping pin and using gpio_wakeup_enable()
+    // on it corrupts its normal input function. This clears any bad state.
+    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
+    Serial.println("[INIT] GPIO 0 reset (clear RTC state)");
 
     // Initialize board (enables peripheral power)
     board.begin();
@@ -417,8 +490,37 @@ void initHardware() {
     pinMode(PIN_TRACKBALL_DOWN, INPUT_PULLUP);
     pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
     pinMode(PIN_TRACKBALL_RIGHT, INPUT_PULLUP);
+
+    // GPIO 0 is the ESP32-S3 BOOT strapping pin
+    // Use simple Arduino API - avoid ESP-IDF gpio_config which may cause latch-up
     pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
+    delay(10);
+
+    Serial.printf("[INIT] Trackball click GPIO 0 state: %d\n", digitalRead(PIN_TRACKBALL_CLICK));
     Serial.println("[INIT] Trackball: OK");
+
+    // Initialize touch screen
+    if (Touch::init()) {
+        Serial.println("[INIT] Touch: OK");
+    } else {
+        Serial.println("[INIT] Touch: Not detected (or failed)");
+    }
+
+    // Initialize audio driver
+    if (Audio::initSpeaker()) {
+        Serial.println("[INIT] Audio: OK");
+
+        // Sync audio settings from saved preferences
+        DeviceSettings& audioSettings = SettingsManager::getDeviceSettings();
+        Audio::setVolume(audioSettings.audioVolume);
+        if (audioSettings.audioMuted) {
+            Audio::mute();
+        }
+        Serial.printf("[INIT] Audio volume: %d%%, muted: %s\n",
+                      audioSettings.audioVolume, audioSettings.audioMuted ? "yes" : "no");
+    } else {
+        Serial.println("[INIT] Audio: FAILED");
+    }
 
     // Detect GPS (T-Deck Plus has two GPS variants with different baud rates)
     // Try both L76K (9600) and M10Q (38400) baud rates
@@ -548,6 +650,8 @@ bool initMesh() {
     theMesh->setCLIResponseCallback(onCLIResponse);
     theMesh->setChannelMessageCallback(onChannelMessage);
     theMesh->setDMCallback(onDMReceived);
+    theMesh->setDeliveryCallback(onDMDeliveryStatus);
+    theMesh->setRepeatCallback(onChannelRepeat);
 
     // Start theMesh
     if (!theMesh->begin()) {
@@ -619,6 +723,7 @@ void initUI() {
     Screens.registerScreen(&messagesScreen);
     Screens.registerScreen(&chatScreen);
     Screens.registerScreen(&dmChatScreen);
+    Screens.registerScreen(&dmSettingsScreen);
     Screens.registerScreen(&contactsScreen);
     Screens.registerScreen(&settingsScreen);
     Screens.registerScreen(&channelsScreen);
@@ -626,6 +731,7 @@ void initUI() {
     Screens.registerScreen(&repeaterAdminScreen);
     Screens.registerScreen(&_repeaterCLIScreen);
     Screens.registerScreen(&aboutScreen);
+    Screens.registerScreen(&emojiPickerScreen);
 
     // Note: repeaterAdminScreen.setMesh() is called after initMesh() in setup()
 
@@ -636,39 +742,70 @@ void handleInput() {
     // Handle keyboard
     uint8_t key = Keyboard::read();
     if (key != KEY_NONE) {
-        // Reset activity timer and restore backlight
-        lastActivityTime = millis();
-        if (backlightDimmed) {
-            Keyboard::setBacklight(true);
-            backlightDimmed = false;
-        }
+        // Notify power FSM of user activity (resets timers, wakes screen)
+        Power::onUserActivity();
 
         char c = Keyboard::getChar(key);
         Screens.handleKey(key, c);
     }
 
-    // Handle trackball (edge detection)
+    // Handle touch screen - Meshtastic-style state machine
+    // Only fire tap on state TRANSITION (touched -> not touched)
+    static bool touchedOld = false;
+    static int16_t lastTouchX = 0;
+    static int16_t lastTouchY = 0;
+
+    int16_t x, y;
+    bool touched = Touch::read(&x, &y);
+
+    // Update coordinates while touching
+    if (touched) {
+        // Notify power FSM of user activity
+        Power::onUserActivity();
+        lastTouchX = x;
+        lastTouchY = y;
+    }
+
+    // Only act on state TRANSITIONS
+    if (touched != touchedOld) {
+        if (!touched) {
+            // Transition from touching to not-touching = release = fire tap
+            InputData input(InputEvent::TOUCH_TAP, lastTouchX, lastTouchY);
+            Screens.handleInput(input);
+        }
+    }
+    touchedOld = touched;  // Update AFTER comparison
+
+    // Handle trackball (polling with edge detection)
     static bool prevUp = true, prevDown = true, prevLeft = true, prevRight = true, prevClick = true;
+    static uint32_t lastClickDebounce = 0;
+
     bool up = digitalRead(PIN_TRACKBALL_UP);
     bool down = digitalRead(PIN_TRACKBALL_DOWN);
     bool left = digitalRead(PIN_TRACKBALL_LEFT);
     bool right = digitalRead(PIN_TRACKBALL_RIGHT);
-    bool click = digitalRead(PIN_TRACKBALL_CLICK);
 
-    // Only send events on edges (button press)
+    // GPIO 0 (trackball click) is ESP32-S3's BOOT strapping pin
+    // Use direct register read to bypass Arduino's digitalRead() which may have issues
+    // with strapping pins. REG_READ(GPIO_IN_REG) reads the raw GPIO input register.
+    bool click = (REG_READ(GPIO_IN_REG) & BIT(PIN_TRACKBALL_CLICK)) != 0;
+
+    // Edge detection (active LOW - edge is when going from HIGH to LOW)
     bool upEdge = !up && prevUp;
     bool downEdge = !down && prevDown;
     bool leftEdge = !left && prevLeft;
     bool rightEdge = !right && prevRight;
-    bool clickEdge = !click && prevClick;
+
+    // Click edge with debouncing (50ms)
+    bool clickEdge = false;
+    if (!click && prevClick && (millis() - lastClickDebounce > 50)) {
+        clickEdge = true;
+        lastClickDebounce = millis();
+    }
 
     if (upEdge || downEdge || leftEdge || rightEdge || clickEdge) {
-        // Reset activity timer and restore backlight
-        lastActivityTime = millis();
-        if (backlightDimmed) {
-            Keyboard::setBacklight(true);
-            backlightDimmed = false;
-        }
+        // Notify power FSM of user activity
+        Power::onUserActivity();
 
         Screens.handleTrackball(upEdge, downEdge, leftEdge, rightEdge, clickEdge);
     }
@@ -690,6 +827,10 @@ void onMessageReceived(const Message& msg) {
     // Direct messages (non-channel) are handled here
     // Note: Channel messages go through onChannelMessage callback instead
 
+    // Play configurable notification sound
+    DeviceSettings& settings = SettingsManager::getDeviceSettings();
+    Audio::playAlertTone(settings.toneMessage);
+
     // Show notification in status bar
     Screens.showStatus("New message!", 3000);
 
@@ -699,11 +840,15 @@ void onMessageReceived(const Message& msg) {
     homeScreen.setBadge(HOME_MESSAGES, unread);
 }
 
-void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp) {
-    Serial.printf("[CHANNEL] Ch%d: %s\n", channelIdx, senderAndText);
+void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops) {
+    Serial.printf("[CHANNEL] Ch%d (hops=%d): %s\n", channelIdx, hops, senderAndText);
 
-    // Route to MessagesScreen for conversation tracking
-    MessagesScreen::onChannelMessage(channelIdx, senderAndText, timestamp);
+    // Route to MessagesScreen (handles conversation tracking AND forwards to ChatScreen with hops)
+    MessagesScreen::onChannelMessage(channelIdx, senderAndText, timestamp, hops);
+
+    // Play configurable notification sound
+    DeviceSettings& settings = SettingsManager::getDeviceSettings();
+    Audio::playAlertTone(settings.toneMessage);
 
     // Show notification in status bar
     Screens.showStatus("New message!", 3000);
@@ -716,6 +861,10 @@ void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timest
 
 void onNodeDiscovered(const NodeInfo& node) {
     Serial.printf("[NODE] Discovered: %s (type=%d, RSSI: %d)\n", node.name, node.type, node.rssi);
+
+    // Play configurable connect sound
+    DeviceSettings& settings = SettingsManager::getDeviceSettings();
+    Audio::playAlertTone(settings.toneNodeConnect);
 
     // Note: Contact saving with pubKey is handled in MeshBerryMesh::onAdvertRecv
     // StatusScreen will show updated node count on next draw
@@ -756,8 +905,23 @@ void onDMReceived(uint32_t senderId, const char* senderName, const char* text, u
     DMSettings& dms = SettingsManager::getDMSettings();
     dms.addMessage(senderId, text, false, timestamp);
 
+    // Also persist to archive for extended history
+    ArchivedMessage archived;
+    archived.clear();
+    archived.timestamp = timestamp;
+    strncpy(archived.sender, senderName ? senderName : "Unknown", ARCHIVE_SENDER_LEN - 1);
+    archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
+    strncpy(archived.text, text, ARCHIVE_TEXT_LEN - 1);
+    archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
+    archived.isOutgoing = 0;
+    MessageArchive::saveDMMessage(senderId, archived);
+
     // Save DMs to persist the new message
     SettingsManager::saveDMs();
+
+    // Play configurable notification sound
+    DeviceSettings& settings = SettingsManager::getDeviceSettings();
+    Audio::playAlertTone(settings.toneMessage);
 
     // If DMChatScreen is open for this contact, update it
     if (Screens.getCurrentScreenId() == ScreenId::DM_CHAT) {
@@ -774,6 +938,43 @@ void onDMReceived(uint32_t senderId, const char* senderName, const char* text, u
     if (unread > 0) {
         Screens.setNotificationCount(unread);
     }
+}
+
+void onDMDeliveryStatus(uint32_t contactId, uint32_t ack_crc, bool delivered, uint8_t attempts) {
+    Serial.printf("[DM] Delivery status: contact=%08X, ack=%08X, delivered=%d, attempts=%d\n",
+                  contactId, ack_crc, delivered, attempts);
+
+    // Update the message status in DMSettings
+    DMSettings& dms = SettingsManager::getDMSettings();
+    int convIdx = dms.findConversation(contactId);
+    if (convIdx >= 0) {
+        DMConversation* conv = dms.getConversation(convIdx);
+        if (conv) {
+            DMDeliveryStatus newStatus = delivered ? DM_STATUS_DELIVERED : DM_STATUS_FAILED;
+            conv->updateDeliveryStatus(ack_crc, newStatus);
+        }
+    }
+
+    // If DMChatScreen is open for this contact, refresh it
+    if (Screens.getCurrentScreenId() == ScreenId::DM_CHAT &&
+        dmChatScreen.getContactId() == contactId) {
+        dmChatScreen.requestRedraw();
+    }
+
+    // Show brief notification for delivery status
+    if (delivered) {
+        Screens.showStatus("Message delivered", 1500);
+    } else {
+        Screens.showStatus("Message failed", 2000);
+    }
+}
+
+void onChannelRepeat(int channelIdx, uint32_t contentHash, uint8_t repeatCount) {
+    Serial.printf("[CHANNEL] Repeat heard: ch=%d, hash=%08X, count=%d\n",
+                  channelIdx, contentHash, repeatCount);
+
+    // Update the ChatScreen message with repeat count
+    ChatScreen::updateRepeatCount(channelIdx, contentHash, repeatCount);
 }
 
 // =============================================================================

@@ -84,6 +84,13 @@ public:
     bool handleTrackball(bool up, bool down, bool left, bool right, bool click);
 
     /**
+     * Handle touch drag for scrolling
+     * @param deltaY Vertical drag delta (positive = dragged down)
+     * @return true if scroll occurred
+     */
+    bool handleTouchDrag(int16_t deltaY);
+
+    /**
      * Check if list needs redraw
      */
     bool needsRedraw() const { return _needsRedraw; }
@@ -112,6 +119,16 @@ public:
      * Show/hide scroll indicators
      */
     void setShowScrollIndicators(bool show) { _showScrollIndicators = show; }
+
+    /**
+     * Get current scroll offset (first visible item index)
+     */
+    int getScrollOffset() const { return _scrollOffset; }
+
+    /**
+     * Get list Y position
+     */
+    int16_t getY() const { return _y; }
 
 private:
     // Draw a single item

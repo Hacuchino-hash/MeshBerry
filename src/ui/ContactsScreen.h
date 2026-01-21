@@ -14,6 +14,9 @@
 #include "ScreenManager.h"
 #include "ListView.h"
 
+// Forward declaration
+struct ContactEntry;
+
 /**
  * Contacts Screen - Node/repeater list
  */
@@ -35,6 +38,10 @@ private:
     // Build contact list from settings
     void buildContactList();
 
+    // Helper functions for building list with favorites sorted to top
+    void addRepeaterToList(const ContactEntry* c, int originalIdx);
+    void addContactToList(const ContactEntry* c, int originalIdx);
+
     // Handle contact selection
     void onContactSelected(int index);
 
@@ -45,9 +52,15 @@ private:
     ListView _listView;
     static constexpr int MAX_CONTACTS = 32;
     ListItem _contactItems[MAX_CONTACTS];
-    char _primaryStrings[MAX_CONTACTS][24];
+    char _primaryStrings[MAX_CONTACTS][32];  // Increased for section headers
     char _secondaryStrings[MAX_CONTACTS][32];
     int _contactCount = 0;
+
+    // Section tracking
+    int _repeaterHeaderIdx = -1;
+    int _contactsHeaderIdx = -1;
+    int _repeaterCount = 0;
+    int _regularContactCount = 0;
 };
 
 #endif // MESHBERRY_CONTACTSSCREEN_H

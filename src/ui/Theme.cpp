@@ -6,6 +6,7 @@
  */
 
 #include "Theme.h"
+#include "Emoji.h"
 #include <string.h>
 
 namespace Theme {
@@ -90,6 +91,65 @@ const char* truncateText(const char* text, int16_t maxWidth, uint8_t size) {
     strcat(truncateBuffer, "...");
 
     return truncateBuffer;
+}
+
+int wrapText(const char* text, int16_t maxWidth, uint8_t size,
+             char lines[][64], int maxLines) {
+    if (!text || maxWidth < 30 || maxLines < 1) return 0;
+
+    int lineCount = 0;
+    int linePos = 0;
+    const char* p = text;
+    int16_t lineWidth = 0;
+    int16_t charWidth = (size >= 2) ? CHAR_WIDTH_L : CHAR_WIDTH_S;
+
+    while (*p && lineCount < maxLines) {
+        // Find end of word (space or null)
+        const char* wordEnd = p;
+        while (*wordEnd && *wordEnd != ' ') wordEnd++;
+
+        // Calculate word width
+        int wordLen = wordEnd - p;
+        char wordBuf[64];
+        if (wordLen >= 64) wordLen = 63;
+        strncpy(wordBuf, p, wordLen);
+        wordBuf[wordLen] = '\0';
+        int16_t wordWidth = Emoji::textWidth(wordBuf, size);
+
+        // Would word fit on current line?
+        if (linePos > 0 && lineWidth + charWidth + wordWidth > maxWidth) {
+            // Finish current line, start new
+            lines[lineCount][linePos] = '\0';
+            lineCount++;
+            linePos = 0;
+            lineWidth = 0;
+            if (lineCount >= maxLines) break;
+        }
+
+        // Add space if not start of line
+        if (linePos > 0) {
+            lines[lineCount][linePos++] = ' ';
+            lineWidth += charWidth;
+        }
+
+        // Add word (truncate if single word too long)
+        for (int i = 0; i < wordLen && linePos < 62; i++) {
+            lines[lineCount][linePos++] = p[i];
+        }
+        lineWidth += wordWidth;
+
+        // Move past word and space
+        p = wordEnd;
+        if (*p == ' ') p++;
+    }
+
+    // Finish last line
+    if (linePos > 0 && lineCount < maxLines) {
+        lines[lineCount][linePos] = '\0';
+        lineCount++;
+    }
+
+    return lineCount;
 }
 
 } // namespace Theme

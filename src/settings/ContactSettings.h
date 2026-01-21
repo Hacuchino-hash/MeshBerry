@@ -17,6 +17,17 @@
 #include "../mesh/MeshBerryMesh.h"
 
 // =============================================================================
+// DM ROUTING MODE
+// =============================================================================
+
+enum DMRoutingMode : uint8_t {
+    DM_ROUTE_AUTO = 0,      // Auto: use direct if path known, flood otherwise
+    DM_ROUTE_FLOOD = 1,     // Always use flood routing
+    DM_ROUTE_DIRECT = 2,    // Always use direct routing (fail if no path)
+    DM_ROUTE_MANUAL = 3     // Manual path through selected repeaters
+};
+
+// =============================================================================
 // CONTACT ENTRY
 // =============================================================================
 
@@ -37,6 +48,11 @@ struct ContactEntry {
     int8_t outPathLen;      // -1 = unknown, 0+ = valid path length
     uint32_t pathLearnedAt; // millis() when path was learned
 
+    // DM routing preferences
+    DMRoutingMode routingMode;  // How to route DMs to this contact
+    uint8_t manualPath[8];      // Manual path via repeater IDs (up to 8 hops)
+    uint8_t manualPathLen;      // Length of manual path
+
     void clear() {
         id = 0;
         name[0] = '\0';
@@ -52,6 +68,10 @@ struct ContactEntry {
         memset(outPath, 0, sizeof(outPath));
         outPathLen = -1;  // Unknown path
         pathLearnedAt = 0;
+        // Clear DM routing preferences
+        routingMode = DM_ROUTE_AUTO;
+        memset(manualPath, 0, sizeof(manualPath));
+        manualPathLen = 0;
     }
 
     bool hasSavedPassword() const {
@@ -97,6 +117,9 @@ struct ContactSettings {
 
     // Find contact by ID
     int findContact(uint32_t id) const;
+
+    // Find contact by full public key (32 bytes) - prevents duplicates
+    int findContactByPubKey(const uint8_t* pubKey) const;
 
     // Find contact by name prefix
     int findContactByName(const char* namePrefix) const;

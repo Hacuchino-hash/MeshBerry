@@ -20,21 +20,21 @@ extern RepeaterCLIScreen* repeaterCLIScreen;
 
 // Predefined admin commands
 const RepeaterAdminScreen::Command RepeaterAdminScreen::_commands[NUM_COMMANDS] = {
-    {"View Status",     nullptr,    1},  // Guest+ (opens status view)
-    {"Settings",        nullptr,    2},  // Operator+ (opens settings menu)
-    {"Send Advert",     "advert",   2},  // Operator+
-    {"Get Uptime",      "uptime",   1},  // Guest+
-    {"Get Config",      "get name", 2},  // Operator+
-    {"Reboot",          "reboot",   3},  // Admin only
-    {"Terminal",        nullptr,    2},  // Operator+ (opens CLI screen)
-    {"Logout",          nullptr,    0}   // Always available
+    {"View Status",     nullptr,      1},  // Guest+ (opens status view)
+    {"Settings",        nullptr,      2},  // Operator+ (opens settings menu)
+    {"Send Advert",     "advert",     2},  // Operator+
+    {"Get Version",     "ver",        1},  // Guest+ (returns firmware version)
+    {"Get Name",        "get name",   1},  // Guest+ (returns repeater name)
+    {"Reboot",          "reboot",     3},  // Admin only
+    {"Terminal",        nullptr,      2},  // Operator+ (opens CLI screen)
+    {"Logout",          nullptr,      0}   // Always available
 };
 
-// Settings definitions
+// Settings definitions - using actual MeshCore CLI commands
 const RepeaterAdminScreen::Setting RepeaterAdminScreen::_settings[NUM_SETTINGS] = {
-    {"Advert Interval", "get advert_interval", "set advert_interval", 2},
-    {"Flood Mode",      "get flood",           "set flood",           2},
-    {"Zero Hop",        "get zero_hop",        "set zero_hop",        2}
+    {"Advert Interval", "get advert.interval", "set advert.interval", 2},  // Minutes (60-240)
+    {"Repeat Mode",     "get repeat",          "set repeat",          2},  // on/off
+    {"TX Power",        "get tx",              "set tx",              2}   // dBm
 };
 
 void RepeaterAdminScreen::clearScreen() {
@@ -57,9 +57,9 @@ void RepeaterAdminScreen::onEnter() {
 
     // Clear status info
     _statusName[0] = '\0';
-    _statusUptime[0] = '\0';
+    _statusVersion[0] = '\0';
     _statusFreq[0] = '\0';
-    _statusTxPower[0] = '\0';
+    _statusTxPowerStr[0] = '\0';
 
     // Load saved password if available
     loadSavedPassword();
@@ -336,13 +336,13 @@ void RepeaterAdminScreen::drawSettingsMenu(bool fullRedraw) {
         if (_settingsLoaded) {
             switch (i) {
                 case 0:  // Advert Interval
-                    snprintf(valBuf, sizeof(valBuf), "%d sec", _advertInterval);
+                    snprintf(valBuf, sizeof(valBuf), "%d min", _advertInterval);
                     break;
-                case 1:  // Flood
-                    snprintf(valBuf, sizeof(valBuf), "%s", _floodEnabled ? "ON" : "OFF");
+                case 1:  // Repeat Mode
+                    snprintf(valBuf, sizeof(valBuf), "%s", _repeatEnabled ? "ON" : "OFF");
                     break;
-                case 2:  // Zero Hop
-                    snprintf(valBuf, sizeof(valBuf), "%s", _zeroHopEnabled ? "ON" : "OFF");
+                case 2:  // TX Power
+                    snprintf(valBuf, sizeof(valBuf), "%d dBm", _txPower);
                     break;
             }
             Display::drawText(180, y, valBuf, Theme::ACCENT, 1);
@@ -378,13 +378,13 @@ void RepeaterAdminScreen::drawEditSetting(bool fullRedraw) {
     char currentVal[32];
     switch (_selectedSetting) {
         case 0:
-            snprintf(currentVal, sizeof(currentVal), "Current: %d sec", _advertInterval);
+            snprintf(currentVal, sizeof(currentVal), "Current: %d min", _advertInterval);
             break;
         case 1:
-            snprintf(currentVal, sizeof(currentVal), "Current: %s", _floodEnabled ? "ON" : "OFF");
+            snprintf(currentVal, sizeof(currentVal), "Current: %s", _repeatEnabled ? "ON" : "OFF");
             break;
         case 2:
-            snprintf(currentVal, sizeof(currentVal), "Current: %s", _zeroHopEnabled ? "ON" : "OFF");
+            snprintf(currentVal, sizeof(currentVal), "Current: %d dBm", _txPower);
             break;
     }
     Display::drawText(16, y, currentVal, Theme::TEXT_SECONDARY, 1);
@@ -392,8 +392,10 @@ void RepeaterAdminScreen::drawEditSetting(bool fullRedraw) {
 
     // Input prompt
     const char* prompt = "Enter new value:";
-    if (_selectedSetting == 1 || _selectedSetting == 2) {
-        prompt = "Enter 0/1 or on/off:";
+    if (_selectedSetting == 1) {
+        prompt = "Enter on/off:";
+    } else if (_selectedSetting == 2) {
+        prompt = "Enter TX power (dBm):";
     }
     Display::drawText(16, y, prompt, Theme::TEXT_SECONDARY, 1);
     y += 20;
@@ -411,11 +413,14 @@ void RepeaterAdminScreen::drawEditSetting(bool fullRedraw) {
     // Help text
     y += 40;
     if (_selectedSetting == 0) {
-        Display::drawText(16, y, "Advert interval in seconds", Theme::GRAY_LIGHT, 1);
-        Display::drawText(16, y + 14, "e.g., 300 = 5 minutes", Theme::GRAY_LIGHT, 1);
+        Display::drawText(16, y, "Advert interval in minutes", Theme::GRAY_LIGHT, 1);
+        Display::drawText(16, y + 14, "Range: 60-240 minutes", Theme::GRAY_LIGHT, 1);
+    } else if (_selectedSetting == 1) {
+        Display::drawText(16, y, "on = forwarding enabled", Theme::GRAY_LIGHT, 1);
+        Display::drawText(16, y + 14, "off = forwarding disabled", Theme::GRAY_LIGHT, 1);
     } else {
-        Display::drawText(16, y, "0 or off = disabled", Theme::GRAY_LIGHT, 1);
-        Display::drawText(16, y + 14, "1 or on = enabled", Theme::GRAY_LIGHT, 1);
+        Display::drawText(16, y, "TX power in dBm", Theme::GRAY_LIGHT, 1);
+        Display::drawText(16, y + 14, "e.g., 17, 20, 22", Theme::GRAY_LIGHT, 1);
     }
 }
 
@@ -434,9 +439,9 @@ void RepeaterAdminScreen::drawStatusScreen(bool fullRedraw) {
     Display::drawText(valueX, y, _statusName[0] ? _statusName : "---", Theme::WHITE, 1);
     y += 18;
 
-    // Uptime
-    Display::drawText(labelX, y, "Uptime:", Theme::TEXT_SECONDARY, 1);
-    Display::drawText(valueX, y, _statusUptime[0] ? _statusUptime : "---", Theme::WHITE, 1);
+    // Version
+    Display::drawText(labelX, y, "Version:", Theme::TEXT_SECONDARY, 1);
+    Display::drawText(valueX, y, _statusVersion[0] ? _statusVersion : "---", Theme::WHITE, 1);
     y += 18;
 
     // Frequency
@@ -446,7 +451,7 @@ void RepeaterAdminScreen::drawStatusScreen(bool fullRedraw) {
 
     // TX Power
     Display::drawText(labelX, y, "TX Power:", Theme::TEXT_SECONDARY, 1);
-    Display::drawText(valueX, y, _statusTxPower[0] ? _statusTxPower : "---", Theme::WHITE, 1);
+    Display::drawText(valueX, y, _statusTxPowerStr[0] ? _statusTxPowerStr : "---", Theme::WHITE, 1);
     y += 18;
 
     // Settings
@@ -457,21 +462,25 @@ void RepeaterAdminScreen::drawStatusScreen(bool fullRedraw) {
     char buf[32];
     Display::drawText(labelX, y, "Advert Int:", Theme::TEXT_SECONDARY, 1);
     if (_settingsLoaded) {
-        snprintf(buf, sizeof(buf), "%d sec", _advertInterval);
+        snprintf(buf, sizeof(buf), "%d min", _advertInterval);
         Display::drawText(valueX, y, buf, Theme::WHITE, 1);
     } else {
         Display::drawText(valueX, y, "---", Theme::GRAY_MID, 1);
     }
     y += 18;
 
-    Display::drawText(labelX, y, "Flood:", Theme::TEXT_SECONDARY, 1);
-    Display::drawText(valueX, y, _settingsLoaded ? (_floodEnabled ? "ON" : "OFF") : "---",
-                      _floodEnabled ? Theme::GREEN : Theme::WHITE, 1);
+    Display::drawText(labelX, y, "Repeat:", Theme::TEXT_SECONDARY, 1);
+    Display::drawText(valueX, y, _settingsLoaded ? (_repeatEnabled ? "ON" : "OFF") : "---",
+                      _repeatEnabled ? Theme::GREEN : Theme::WHITE, 1);
     y += 18;
 
-    Display::drawText(labelX, y, "Zero Hop:", Theme::TEXT_SECONDARY, 1);
-    Display::drawText(valueX, y, _settingsLoaded ? (_zeroHopEnabled ? "ON" : "OFF") : "---",
-                      _zeroHopEnabled ? Theme::GREEN : Theme::WHITE, 1);
+    Display::drawText(labelX, y, "TX Power:", Theme::TEXT_SECONDARY, 1);
+    if (_settingsLoaded) {
+        snprintf(buf, sizeof(buf), "%d dBm", _txPower);
+        Display::drawText(valueX, y, buf, Theme::WHITE, 1);
+    } else {
+        Display::drawText(valueX, y, "---", Theme::GRAY_MID, 1);
+    }
 
     // Last response at bottom
     if (_lastResponse[0]) {
@@ -497,6 +506,83 @@ void RepeaterAdminScreen::drawDisconnectedScreen(bool fullRedraw) {
 }
 
 bool RepeaterAdminScreen::handleInput(const InputData& input) {
+    // Handle touch tap for soft keys
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back/Cancel
+                if (_state == STATE_CONNECTING) {
+                    _state = STATE_PASSWORD;
+                    configureSoftKeys();
+                    requestRedraw();
+                } else {
+                    Screens.goBack();
+                }
+            } else if (tx >= 107) {
+                // Center soft key - varies by state
+                switch (_state) {
+                    case STATE_PASSWORD:
+                        attemptLogin();
+                        break;
+                    case STATE_CONNECTED:
+                        sendSelectedCommand();
+                        break;
+                    case STATE_CUSTOM_CMD:
+                        sendCustomCommand();
+                        break;
+                    case STATE_SETTINGS:
+                        // Start editing the selected setting
+                        _state = STATE_EDIT_SETTING;
+                        _customCmd[0] = '\0';
+                        _customCmdPos = 0;
+                        configureSoftKeys();
+                        requestRedraw();
+                        break;
+                    case STATE_EDIT_SETTING:
+                        applyCurrentSetting();
+                        break;
+                    case STATE_DISCONNECTED:
+                        _state = STATE_PASSWORD;
+                        configureSoftKeys();
+                        requestRedraw();
+                        break;
+                    default:
+                        break;
+                }
+            } else {
+                // Left soft key - varies by state
+                switch (_state) {
+                    case STATE_PASSWORD:
+                        _savePassword = !_savePassword;
+                        configureSoftKeys();
+                        requestRedraw();
+                        break;
+                    case STATE_CUSTOM_CMD:
+                    case STATE_EDIT_SETTING:
+                        // Clear input
+                        _customCmd[0] = '\0';
+                        _customCmdPos = 0;
+                        requestRedraw();
+                        break;
+                    case STATE_SETTINGS:
+                        fetchSettings();
+                        break;
+                    case STATE_STATUS:
+                        fetchStatus();
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
     switch (_state) {
         case STATE_PASSWORD:
             return handlePasswordInput(input);
@@ -903,12 +989,12 @@ void RepeaterAdminScreen::fetchSettings() {
 
     // Send get commands for all settings
     // Note: We'll parse responses as they come in via onCLIResponse
-    _mesh->sendRepeaterCommand("get advert_interval");
+    // Using correct MeshCore CLI command names (dots not underscores)
+    _mesh->sendRepeaterCommand("get advert.interval");
+    _mesh->sendRepeaterCommand("get repeat");
+    _mesh->sendRepeaterCommand("get tx");
     strlcpy(_lastResponse, "Fetching settings...", sizeof(_lastResponse));
     requestRedraw();
-
-    // The responses will update _advertInterval, _floodEnabled, _zeroHopEnabled
-    // This is a simplified approach - in practice you might want to queue these
 }
 
 void RepeaterAdminScreen::fetchStatus() {
@@ -916,12 +1002,15 @@ void RepeaterAdminScreen::fetchStatus() {
 
     // Clear old status
     _statusName[0] = '\0';
-    _statusUptime[0] = '\0';
+    _statusVersion[0] = '\0';
     _statusFreq[0] = '\0';
-    _statusTxPower[0] = '\0';
+    _statusTxPowerStr[0] = '\0';
 
-    // Request status info
-    _mesh->sendRepeaterCommand("status");
+    // Request status info using actual MeshCore CLI commands
+    _mesh->sendRepeaterCommand("get name");
+    _mesh->sendRepeaterCommand("ver");
+    _mesh->sendRepeaterCommand("get freq");
+    _mesh->sendRepeaterCommand("get tx");
     strlcpy(_lastResponse, "Fetching status...", sizeof(_lastResponse));
     requestRedraw();
 }
@@ -941,13 +1030,14 @@ void RepeaterAdminScreen::applyCurrentSetting() {
 
         // Optimistically update local cache based on what we sent
         if (_selectedSetting == 0) {
+            // Advert interval in minutes
             _advertInterval = atoi(_settingValue);
         } else if (_selectedSetting == 1) {
-            _floodEnabled = (strcmp(_settingValue, "1") == 0 ||
-                            strcasecmp(_settingValue, "on") == 0);
+            // Repeat mode (on/off)
+            _repeatEnabled = (strcasecmp(_settingValue, "on") == 0);
         } else if (_selectedSetting == 2) {
-            _zeroHopEnabled = (strcmp(_settingValue, "1") == 0 ||
-                              strcasecmp(_settingValue, "on") == 0);
+            // TX power in dBm
+            _txPower = atoi(_settingValue);
         }
         _settingsLoaded = true;
 
@@ -960,22 +1050,9 @@ void RepeaterAdminScreen::applyCurrentSetting() {
 }
 
 void RepeaterAdminScreen::parseStatusResponse(const char* response) {
-    // Try to parse common status fields from response
-    // Format varies, but often includes "name:", "uptime:", "freq:", "power:"
-    // This is best-effort parsing
-
-    if (strstr(response, "name") || strstr(response, "Name")) {
-        // Try to extract name
-        const char* p = strstr(response, ":");
-        if (p) {
-            p++;
-            while (*p == ' ') p++;
-            strlcpy(_statusName, p, sizeof(_statusName));
-            // Trim at newline or comma
-            char* end = strpbrk(_statusName, "\n,");
-            if (end) *end = '\0';
-        }
-    }
+    // This function is kept for compatibility but most parsing now happens in onCLIResponse()
+    // MeshCore CLI responses are in "> value" format handled there
+    (void)response;  // Unused
 }
 
 // Callbacks from mesh
@@ -1007,29 +1084,59 @@ void RepeaterAdminScreen::onCLIResponse(const char* response) {
 
     strlcpy(_lastResponse, response, sizeof(_lastResponse));
 
-    // Try to parse settings from response
-    if (strstr(response, "advert_interval") || strstr(response, "advert interval")) {
-        // Extract number
-        const char* p = response;
-        while (*p && !isdigit(*p)) p++;
-        if (*p) {
-            _advertInterval = atoi(p);
-            _settingsLoaded = true;
-        }
-    } else if (strstr(response, "flood")) {
-        _floodEnabled = (strstr(response, "on") || strstr(response, "ON") ||
-                        strstr(response, "true") || strstr(response, "1"));
-        _settingsLoaded = true;
-    } else if (strstr(response, "zero_hop") || strstr(response, "zero hop")) {
-        _zeroHopEnabled = (strstr(response, "on") || strstr(response, "ON") ||
-                          strstr(response, "true") || strstr(response, "1"));
-        _settingsLoaded = true;
-    } else if (strstr(response, "uptime")) {
-        strlcpy(_statusUptime, response, sizeof(_statusUptime));
-    }
+    // MeshCore CLI responses use "> value" format
+    // Parse settings based on what we requested
 
-    // Also try generic status parsing
-    parseStatusResponse(response);
+    // Check for advert interval response (format: "> 120" for 120 minutes)
+    // The response comes after "get advert.interval"
+    if (_lastResponse[0] == '>') {
+        // It's a value response - need to figure out which setting it's for
+        // Parse the numeric value
+        const char* p = _lastResponse + 1;
+        while (*p == ' ') p++;
+
+        // Check if it's an on/off value (for repeat)
+        if (strncmp(p, "on", 2) == 0 || strncmp(p, "ON", 2) == 0) {
+            _repeatEnabled = true;
+            _settingsLoaded = true;
+        } else if (strncmp(p, "off", 3) == 0 || strncmp(p, "OFF", 3) == 0) {
+            _repeatEnabled = false;
+            _settingsLoaded = true;
+        } else if (isdigit(*p) || (*p == '-' && isdigit(*(p+1)))) {
+            // Numeric value - could be advert interval or TX power
+            int val = atoi(p);
+            // TX power is typically 1-22 dBm, advert interval is 60-240 min
+            if (val >= 60 && val <= 240) {
+                _advertInterval = val;
+                _settingsLoaded = true;
+            } else if (val >= -10 && val <= 30) {
+                // Likely TX power
+                _txPower = val;
+                _settingsLoaded = true;
+            }
+        } else {
+            // Could be a name response - store as status name
+            strlcpy(_statusName, p, sizeof(_statusName));
+            char* end = strpbrk(_statusName, "\n\r");
+            if (end) *end = '\0';
+        }
+    }
+    // Check for firmware version response (format: "MeshCore 1.x.x (Build: ...)")
+    else if (strstr(response, "Build:") || strstr(response, "MeshCore")) {
+        strlcpy(_statusVersion, response, sizeof(_statusVersion));
+        char* end = strpbrk(_statusVersion, "\n\r");
+        if (end) *end = '\0';
+    }
+    // Check for frequency response
+    else if (strstr(response, "MHz") || (response[0] >= '3' && response[0] <= '9' && strstr(response, "."))) {
+        strlcpy(_statusFreq, response, sizeof(_statusFreq));
+        char* end = strpbrk(_statusFreq, "\n\r");
+        if (end) *end = '\0';
+    }
+    // Check for OK responses
+    else if (strstr(response, "OK")) {
+        // Command succeeded, keep the response as-is
+    }
 
     requestRedraw();
 }

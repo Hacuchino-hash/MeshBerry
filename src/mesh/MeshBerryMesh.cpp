@@ -40,6 +40,8 @@ MeshBerryMesh::MeshBerryMesh(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock&
     , _cliCallback(nullptr)
     , _channelMsgCallback(nullptr)
     , _dmCallback(nullptr)
+    , _deliveryCallback(nullptr)
+    , _repeatCallback(nullptr)
     , _forwardingEnabled(true)
     , _connectedRepeaterId(0)
     , _repeaterPermissions(0)
@@ -53,6 +55,8 @@ MeshBerryMesh::MeshBerryMesh(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock&
     memset(_connectedRepeaterName, 0, sizeof(_connectedRepeaterName));
     memset(_repeaterSharedSecret, 0, sizeof(_repeaterSharedSecret));
     memset(_dmPeers, 0, sizeof(_dmPeers));
+    memset(_pendingDMs, 0, sizeof(_pendingDMs));
+    memset(_channelStats, 0, sizeof(_channelStats));
     _lastMatchedDMPeer = -1;
 }
 
@@ -105,6 +109,9 @@ void MeshBerryMesh::loop() {
             _loginCallback(false, 0, "Timeout");
         }
     }
+
+    // Check for DM delivery timeouts
+    checkPendingTimeouts();
 }
 
 void MeshBerryMesh::setNodeName(const char* name) {
@@ -212,6 +219,9 @@ bool MeshBerryMesh::sendToChannel(int channelIdx, const char* text) {
 
     // Send with flood routing
     sendFlood(pkt);
+
+    // Track this message for repeat counting (use text without sender prefix)
+    trackSentChannelMessage(channelIdx, text);
 
     Serial.printf("[MESH] Sent to channel %s: %s\n", entry.name, text);
     return true;
@@ -502,7 +512,31 @@ void MeshBerryMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
 void MeshBerryMesh::onAckRecv(mesh::Packet* packet, uint32_t ack_crc) {
     Serial.printf("[MESH] ACK received: %08X\n", ack_crc);
 
-    // Mark corresponding message as delivered
+    // Check if this ACK matches a pending DM
+    for (int i = 0; i < MAX_PENDING_DMS; i++) {
+        if (_pendingDMs[i].active && _pendingDMs[i].ack_crc == ack_crc) {
+            Serial.printf("[DM] Delivery confirmed for contact %08X (attempt %d)\n",
+                          _pendingDMs[i].contactId, _pendingDMs[i].attempts);
+
+            // Learn path from ACK if it was flood-routed and has path info
+            if (packet->isRouteFlood() && packet->path_len > 0) {
+                learnPath(_pendingDMs[i].contactId, packet->path, packet->path_len);
+                Serial.printf("[ROUTE] Learned path from ACK: %d hops\n", packet->path_len);
+            }
+
+            // Mark as inactive and notify UI
+            uint32_t contactId = _pendingDMs[i].contactId;
+            uint8_t attempts = _pendingDMs[i].attempts;
+            _pendingDMs[i].active = false;
+
+            if (_deliveryCallback) {
+                _deliveryCallback(contactId, ack_crc, true, attempts);
+            }
+            return;
+        }
+    }
+
+    // Fallback: Mark corresponding message as delivered (legacy behavior)
     for (int i = 0; i < _messageCount; i++) {
         int idx = (_messageHead - 1 - i + MAX_MESSAGES) % MAX_MESSAGES;
         if (_messages[idx].isOutgoing && !_messages[idx].delivered) {
@@ -526,6 +560,87 @@ int MeshBerryMesh::searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel 
     }
 
     return count;
+}
+
+bool MeshBerryMesh::filterRecvFloodPacket(mesh::Packet* packet) {
+    // This is called BEFORE the duplicate filter (hasSeen), allowing us to
+    // detect our own repeated messages before they get filtered out
+
+    // Only check group text messages (channel messages)
+    if (packet->getPayloadType() != 0x05) {
+        return false;  // Not a channel message, don't filter
+    }
+
+    // Try to decrypt with each of our channels to see if it's ours
+    uint8_t channel_hash = packet->payload[0];
+    ChannelSettings& chSettings = SettingsManager::getChannelSettings();
+
+    for (int ch = 0; ch < chSettings.numChannels; ch++) {
+        if (!chSettings.channels[ch].isActive) continue;
+        if (chSettings.channels[ch].hash != channel_hash) continue;
+
+        // Build GroupChannel for decryption
+        mesh::GroupChannel channel;
+        channel.hash[0] = channel_hash;
+        memcpy(channel.secret, chSettings.channels[ch].secret, sizeof(channel.secret));
+
+        // Try to decrypt
+        uint8_t data[MAX_PACKET_PAYLOAD];
+        int len = mesh::Utils::MACThenDecrypt(
+            channel.secret,
+            data,
+            &packet->payload[1],  // Skip channel hash byte
+            packet->payload_len - 1
+        );
+
+        if (len > 5) {  // Valid decryption: 4-byte timestamp + 1-byte flags + text
+            // Extract text (skip timestamp and flags)
+            char textBuf[MAX_MESSAGE_LENGTH];
+            size_t textLen = len - 5;
+            if (textLen > sizeof(textBuf) - 1) textLen = sizeof(textBuf) - 1;
+            memcpy(textBuf, &data[5], textLen);
+            textBuf[textLen] = '\0';
+
+            // Parse sender name from "SenderName: message"
+            char senderName[32] = "";
+            const char* msgText = textBuf;
+            const char* colonPos = strstr(textBuf, ": ");
+            if (colonPos && (colonPos - textBuf) < 31) {
+                size_t nameLen = colonPos - textBuf;
+                memcpy(senderName, textBuf, nameLen);
+                senderName[nameLen] = '\0';
+                msgText = colonPos + 2;
+            }
+
+            // Check if this is our own message being repeated
+            if (strcmp(senderName, _nodeName) == 0) {
+                // This is our message! Check against tracked messages
+                uint32_t receivedHash = hashChannelMessage(ch, msgText);
+                uint32_t now = millis();
+
+                for (int i = 0; i < MAX_CHANNEL_STATS; i++) {
+                    if (_channelStats[i].active &&
+                        _channelStats[i].channelIdx == ch &&
+                        _channelStats[i].contentHash == receivedHash) {
+
+                        if ((now - _channelStats[i].sentAt) <= CHANNEL_STATS_EXPIRY_MS) {
+                            _channelStats[i].repeatCount++;
+                            Serial.printf("[REPEAT] Heard our message repeated! ch=%d, hash=%08X, count=%d\n",
+                                          ch, receivedHash, _channelStats[i].repeatCount);
+
+                            if (_repeatCallback) {
+                                _repeatCallback(ch, receivedHash, _channelStats[i].repeatCount);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            break;  // Found matching channel, stop searching
+        }
+    }
+
+    return false;  // Never filter - let hasSeen() handle duplicate filtering
 }
 
 void MeshBerryMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) {
@@ -557,9 +672,25 @@ void MeshBerryMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const me
 
         Serial.printf("[MESH] Channel text (ch=%d): %s\n", channelIdx, textBuf);
 
+        // Extract sender name and message text (before and after ": ")
+        char senderName[32] = "";
+        const char* msgText = textBuf;
+        const char* colonPos = strstr(textBuf, ": ");
+        if (colonPos && (colonPos - textBuf) < 31) {
+            size_t nameLen = colonPos - textBuf;
+            memcpy(senderName, textBuf, nameLen);
+            senderName[nameLen] = '\0';
+            msgText = colonPos + 2;  // Skip ": " to get just the message
+        }
+
+        // Note: Repeat detection now happens in filterRecvFloodPacket() BEFORE
+        // the duplicate filter, so we don't call checkChannelRepeat() here anymore
+
         // Call channel message callback for UI notification
         if (_channelMsgCallback && channelIdx >= 0) {
-            _channelMsgCallback(channelIdx, textBuf, timestamp);
+            // Get hop count from packet path_len (only for flood-routed packets)
+            uint8_t hops = packet->isRouteFlood() ? packet->path_len : 0;
+            _channelMsgCallback(channelIdx, textBuf, timestamp, hops);
         }
 
         // Also add to general message history
@@ -587,6 +718,12 @@ int MeshBerryMesh::findChannelByHash(uint8_t hash) {
 bool MeshBerryMesh::allowPacketForward(const mesh::Packet* packet) {
     // Check if forwarding is enabled (can be toggled via CLI)
     return _forwardingEnabled;
+}
+
+bool MeshBerryMesh::hasPendingWork() const {
+    // Check if there are outbound packets waiting to be sent
+    // Uses 0xFFFFFFFF as "now" to get count regardless of timing
+    return _mgr->getOutboundCount(0xFFFFFFFF) > 0;
 }
 
 // =============================================================================
@@ -1121,7 +1258,7 @@ int MeshBerryMesh::findDMPeerByHash(const uint8_t* hash) {
     return -1;
 }
 
-bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text) {
+bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint32_t* out_ack_crc) {
     if (!text || strlen(text) == 0) return false;
 
     // Find or create DM peer entry
@@ -1145,19 +1282,38 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text) {
     payload[4] = 0x00;                 // Flags: TXT_TYPE_PLAIN (0), attempt 0
     memcpy(payload + 5, text, textLen);// Text at offset 5+
 
+    size_t payloadLen = 5 + textLen;
+
     Serial.printf("[DM] Sending to %08X: \"%s\" (ts=%u, len=%d)\n",
                   contactId, text, ts, (int)textLen);
 
+    // Calculate expected ACK CRC: SHA256(timestamp+flags+text, our_pub_key) truncated to 4 bytes
+    // Receiver uses our pub_key since we are the sender
+    uint32_t expected_ack;
+    mesh::Utils::sha256((uint8_t*)&expected_ack, 4,
+                        payload, payloadLen,
+                        self_id.pub_key, PUB_KEY_SIZE);
+    Serial.printf("[DM] Expected ACK CRC: %08X\n", expected_ack);
+
+    // Return ACK CRC to caller if requested
+    if (out_ack_crc) {
+        *out_ack_crc = expected_ack;
+    }
+
+    // Find a pending slot for tracking delivery
+    int pendingSlot = findFreePendingSlot();
+
     // Create encrypted datagram using PAYLOAD_TYPE_TXT_MSG (0x02)
     mesh::Packet* pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, peer.identity,
-                                        peer.sharedSecret, payload, 5 + textLen);
+                                        peer.sharedSecret, payload, payloadLen);
     if (!pkt) {
         Serial.println("[DM] Failed to create packet");
         return false;
     }
 
     // Check if we have a valid path to this peer
-    if (isPathValid(peer.outPathLen, peer.pathLearnedAt)) {
+    bool useDirect = isPathValid(peer.outPathLen, peer.pathLearnedAt);
+    if (useDirect) {
         // Use direct routing with learned path
         sendDirect(pkt, peer.outPath, peer.outPathLen);
         Serial.printf("[DM] Message sent via DIRECT route (%d hops)\n", peer.outPathLen);
@@ -1166,6 +1322,23 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text) {
         sendFlood(pkt);
         Serial.println("[DM] Message sent via FLOOD (no path known)");
     }
+
+    // Track pending DM for delivery status
+    if (pendingSlot >= 0) {
+        _pendingDMs[pendingSlot].ack_crc = expected_ack;
+        _pendingDMs[pendingSlot].contactId = contactId;
+        _pendingDMs[pendingSlot].sentAt = millis();
+        // Direct timeout: 10s, Flood timeout: 20s
+        _pendingDMs[pendingSlot].timeout = millis() + (useDirect ? 10000 : 20000);
+        memcpy(_pendingDMs[pendingSlot].payload, payload, payloadLen);
+        _pendingDMs[pendingSlot].payloadLen = payloadLen;
+        _pendingDMs[pendingSlot].attempts = 1;
+        _pendingDMs[pendingSlot].isFlood = !useDirect;
+        _pendingDMs[pendingSlot].active = true;
+        Serial.printf("[DM] Tracking delivery in slot %d (timeout in %dms)\n",
+                      pendingSlot, useDirect ? 10000 : 20000);
+    }
+
     return true;
 }
 
@@ -1235,6 +1408,218 @@ void MeshBerryMesh::invalidatePath(uint32_t contactId) {
             memset(c->outPath, 0, sizeof(c->outPath));
             c->outPathLen = -1;
             c->pathLearnedAt = 0;
+        }
+    }
+}
+
+// =============================================================================
+// PENDING DM MANAGEMENT FOR DELIVERY STATUS
+// =============================================================================
+
+int MeshBerryMesh::findFreePendingSlot() {
+    for (int i = 0; i < MAX_PENDING_DMS; i++) {
+        if (!_pendingDMs[i].active) {
+            return i;
+        }
+    }
+    // Evict oldest (by sentAt time)
+    int oldest = 0;
+    for (int i = 1; i < MAX_PENDING_DMS; i++) {
+        if (_pendingDMs[i].sentAt < _pendingDMs[oldest].sentAt) {
+            oldest = i;
+        }
+    }
+    // Mark evicted as failed
+    if (_deliveryCallback) {
+        _deliveryCallback(_pendingDMs[oldest].contactId, _pendingDMs[oldest].ack_crc,
+                          false, _pendingDMs[oldest].attempts);
+    }
+    _pendingDMs[oldest].active = false;
+    return oldest;
+}
+
+void MeshBerryMesh::retryDMWithFlood(int pendingIdx) {
+    if (pendingIdx < 0 || pendingIdx >= MAX_PENDING_DMS) return;
+    PendingDM& pending = _pendingDMs[pendingIdx];
+    if (!pending.active) return;
+
+    Serial.printf("[DM] Retrying message to %08X via FLOOD (attempt %d)\n",
+                  pending.contactId, pending.attempts + 1);
+
+    // Find the DM peer for this contact
+    int peerIdx = -1;
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].contactId == pending.contactId) {
+            peerIdx = i;
+            break;
+        }
+    }
+    if (peerIdx < 0) {
+        Serial.println("[DM] Peer not found for retry - marking failed");
+        pending.active = false;
+        if (_deliveryCallback) {
+            _deliveryCallback(pending.contactId, pending.ack_crc, false, pending.attempts);
+        }
+        return;
+    }
+
+    DMPeer& peer = _dmPeers[peerIdx];
+
+    // Create new packet with same payload
+    mesh::Packet* pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, peer.identity,
+                                        peer.sharedSecret, pending.payload, pending.payloadLen);
+    if (!pkt) {
+        Serial.println("[DM] Failed to create retry packet");
+        pending.active = false;
+        if (_deliveryCallback) {
+            _deliveryCallback(pending.contactId, pending.ack_crc, false, pending.attempts);
+        }
+        return;
+    }
+
+    // Send via flood
+    sendFlood(pkt);
+
+    // Update tracking
+    pending.attempts++;
+    pending.isFlood = true;
+    pending.timeout = millis() + 20000;  // 20s timeout for flood
+    pending.sentAt = millis();
+
+    Serial.printf("[DM] Retry sent via FLOOD (timeout in 20s)\n");
+}
+
+void MeshBerryMesh::checkPendingTimeouts() {
+    uint32_t now = millis();
+
+    for (int i = 0; i < MAX_PENDING_DMS; i++) {
+        if (!_pendingDMs[i].active) continue;
+
+        if (now >= _pendingDMs[i].timeout) {
+            if (_pendingDMs[i].isFlood || _pendingDMs[i].attempts >= 2) {
+                // Already tried flood OR max attempts reached - mark as failed
+                Serial.printf("[DM] Delivery FAILED for contact %08X after %d attempts\n",
+                              _pendingDMs[i].contactId, _pendingDMs[i].attempts);
+
+                uint32_t contactId = _pendingDMs[i].contactId;
+                uint32_t ack_crc = _pendingDMs[i].ack_crc;
+                uint8_t attempts = _pendingDMs[i].attempts;
+                _pendingDMs[i].active = false;
+
+                // Invalidate path since delivery failed
+                invalidatePath(contactId);
+
+                if (_deliveryCallback) {
+                    _deliveryCallback(contactId, ack_crc, false, attempts);
+                }
+            } else {
+                // Direct timed out - retry with flood
+                Serial.printf("[DM] Direct route timed out for %08X - retrying with flood\n",
+                              _pendingDMs[i].contactId);
+                retryDMWithFlood(i);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// CHANNEL REPEAT TRACKING
+// =============================================================================
+
+uint32_t MeshBerryMesh::hashChannelMessage(int channelIdx, const char* text) {
+    // Create a simple hash from channel index and text content
+    // This hash is independent of timestamp, so RTC sync won't affect matching
+    uint32_t hash = 0x811c9dc5;  // FNV-1a offset basis
+    const uint32_t prime = 0x01000193;  // FNV-1a prime
+
+    // Mix in channel index
+    hash ^= (uint32_t)channelIdx;
+    hash *= prime;
+
+    // Mix in text content
+    if (text) {
+        while (*text) {
+            hash ^= (uint8_t)*text++;
+            hash *= prime;
+        }
+    }
+
+    return hash;
+}
+
+void MeshBerryMesh::trackSentChannelMessage(int channelIdx, const char* text) {
+    // Clean up expired entries first
+    uint32_t now = millis();
+    for (int i = 0; i < MAX_CHANNEL_STATS; i++) {
+        if (_channelStats[i].active &&
+            (now - _channelStats[i].sentAt) > CHANNEL_STATS_EXPIRY_MS) {
+            _channelStats[i].active = false;
+        }
+    }
+
+    // Find empty slot or oldest
+    int slot = -1;
+    int oldestSlot = 0;
+    uint32_t oldestTime = UINT32_MAX;
+
+    for (int i = 0; i < MAX_CHANNEL_STATS; i++) {
+        if (!_channelStats[i].active) {
+            slot = i;
+            break;
+        }
+        if (_channelStats[i].sentAt < oldestTime) {
+            oldestTime = _channelStats[i].sentAt;
+            oldestSlot = i;
+        }
+    }
+
+    if (slot < 0) slot = oldestSlot;
+
+    uint32_t contentHash = hashChannelMessage(channelIdx, text);
+    _channelStats[slot].contentHash = contentHash;
+    _channelStats[slot].sentAt = now;
+    _channelStats[slot].channelIdx = channelIdx;
+    _channelStats[slot].repeatCount = 0;
+    _channelStats[slot].active = true;
+
+    Serial.printf("[CHANNEL] Tracking sent message on ch=%d, hash=%08X\n", channelIdx, contentHash);
+}
+
+void MeshBerryMesh::checkChannelRepeat(int channelIdx, const char* text, const char* senderName) {
+    // Debug: Show what we're checking
+    Serial.printf("[REPEAT CHECK] sender='%s' nodeName='%s' match=%d\n",
+                  senderName, _nodeName, strcmp(senderName, _nodeName) == 0);
+
+    // Check if sender matches our node name
+    if (strcmp(senderName, _nodeName) != 0) {
+        return;  // Not our message
+    }
+
+    // Calculate hash of received message
+    uint32_t receivedHash = hashChannelMessage(channelIdx, text);
+    uint32_t now = millis();
+    Serial.printf("[REPEAT CHECK] Looking for hash=%08X on ch=%d\n", receivedHash, channelIdx);
+
+    // Find matching tracked message by content hash
+    for (int i = 0; i < MAX_CHANNEL_STATS; i++) {
+        if (_channelStats[i].active &&
+            _channelStats[i].channelIdx == channelIdx &&
+            _channelStats[i].contentHash == receivedHash) {
+
+            // Check if not expired
+            if ((now - _channelStats[i].sentAt) > CHANNEL_STATS_EXPIRY_MS) {
+                _channelStats[i].active = false;
+                continue;
+            }
+
+            _channelStats[i].repeatCount++;
+            Serial.printf("[CHANNEL] Heard repeat of our message (ch=%d, hash=%08X, count=%d)\n",
+                          channelIdx, receivedHash, _channelStats[i].repeatCount);
+
+            if (_repeatCallback) {
+                _repeatCallback(channelIdx, receivedHash, _channelStats[i].repeatCount);
+            }
+            return;
         }
     }
 }

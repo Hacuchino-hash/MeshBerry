@@ -220,6 +220,19 @@ int16_t getCenteredX(const char* text, int16_t areaWidth, uint8_t size = FONT_ME
  */
 const char* truncateText(const char* text, int16_t maxWidth, uint8_t size = FONT_MEDIUM);
 
+/**
+ * Word-wrap text into lines that fit within maxWidth
+ * Uses emoji-aware width calculation for accurate wrapping
+ * @param text Input text to wrap
+ * @param maxWidth Maximum pixel width per line
+ * @param size Font size (1 or 2)
+ * @param lines Output array of line buffers (each 64 chars)
+ * @param maxLines Maximum number of lines to output
+ * @return Number of lines produced
+ */
+int wrapText(const char* text, int16_t maxWidth, uint8_t size,
+             char lines[][64], int maxLines);
+
 } // namespace Theme
 
 #endif // MESHBERRY_THEME_H

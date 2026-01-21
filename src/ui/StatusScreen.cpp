@@ -85,6 +85,22 @@ void StatusScreen::draw(bool fullRedraw) {
 }
 
 bool StatusScreen::handleInput(const InputData& input) {
+    // Handle touch tap for soft keys
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                Screens.goBack();
+            }
+            return true;
+        }
+        return true;
+    }
+
     // Treat backspace as back since this screen has no text input
     bool isBackKey = (input.event == InputEvent::KEY_PRESS && input.keyCode == KEY_BACKSPACE);
     if (isBackKey) {
@@ -94,6 +110,7 @@ bool StatusScreen::handleInput(const InputData& input) {
 
     switch (input.event) {
         case InputEvent::BACK:
+        case InputEvent::SOFTKEY_RIGHT:
         case InputEvent::TRACKBALL_LEFT:
             Screens.goBack();
             return true;

@@ -33,8 +33,8 @@ void TDeckBoard::begin() {
     pinMode(PIN_PERIPHERAL_POWER, OUTPUT);
     setPeripheralPower(true);
 
-    // Configure trackball/user button
-    pinMode(PIN_TRACKBALL_CLICK, INPUT);
+    // NOTE: GPIO 0 (trackball click) is configured in main.cpp with ESP-IDF API
+    // for interrupt-based detection. Don't configure it here to avoid conflicts.
 
     // Configure LoRa pins
     pinMode(PIN_LORA_MISO, INPUT_PULLUP);
@@ -52,19 +52,86 @@ void TDeckBoard::begin() {
         rtc_gpio_deinit((gpio_num_t)PIN_LORA_DIO1);
     }
 
-    Serial.println("[BOARD] T-Deck board initialized");
-}
-
-uint16_t TDeckBoard::getBattMilliVolts() {
+    // Initialize battery filter with current reading for stable startup
+    // This prevents erratic readings on first boot
     analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+    analogRead(PIN_BATTERY_ADC);  // Discard first
+    delay(10);
 
     uint32_t raw = 0;
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
         raw += analogRead(PIN_BATTERY_ADC);
+        delay(1);
+    }
+    raw = raw / BATTERY_SAMPLES;
+    uint16_t initialMV = (ADC_MULTIPLIER * raw) / 4096;
+
+    // Clamp initial reading too (in case booting while on charger)
+    if (initialMV > 4250) initialMV = 4200;
+
+    // Pre-fill the filter
+    for (int i = 0; i < BATT_FILTER_SIZE; i++) {
+        _battFilter[i] = initialMV;
+    }
+    _battFilterFilled = true;
+    _lastReportedMV = initialMV;
+
+    Serial.printf("[BOARD] Battery filter initialized: %dmV\n", initialMV);
+    Serial.println("[BOARD] T-Deck board initialized");
+}
+
+uint16_t TDeckBoard::getBattMilliVolts() {
+    // Re-configure ADC (required after deep sleep wake)
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);  // Full range 0-3.3V
+
+    // Discard first reading to let ADC stabilize
+    analogRead(PIN_BATTERY_ADC);
+    delay(5);  // Longer delay for stability
+
+    // Take multiple samples
+    uint32_t raw = 0;
+    for (int i = 0; i < BATTERY_SAMPLES; i++) {
+        raw += analogRead(PIN_BATTERY_ADC);
+        delay(1);  // Small delay between samples
     }
     raw = raw / BATTERY_SAMPLES;
 
-    return (ADC_MULTIPLIER * raw) / 4096;
+    // Convert to millivolts
+    uint16_t mv = (ADC_MULTIPLIER * raw) / 4096;
+
+    // Clamp to reasonable battery range (ignore charger voltage)
+    // LiPo max is 4.2V, anything above 4250mV is likely charger connected
+    if (mv > 4250) {
+        // When charging, use last known battery reading to prevent
+        // the 100% -> 30% jump when unplugging
+        if (_lastReportedMV > 0 && _lastReportedMV <= 4250) {
+            mv = _lastReportedMV;  // Keep last battery reading
+        } else {
+            mv = 4200;  // Assume full when first plugged in
+        }
+    }
+
+    // Add to moving average filter
+    _battFilter[_battFilterIdx] = mv;
+    _battFilterIdx = (_battFilterIdx + 1) % BATT_FILTER_SIZE;
+    if (_battFilterIdx == 0) _battFilterFilled = true;
+
+    // Calculate filtered average
+    uint32_t sum = 0;
+    int count = _battFilterFilled ? BATT_FILTER_SIZE : (_battFilterIdx > 0 ? _battFilterIdx : 1);
+    for (int i = 0; i < count; i++) {
+        sum += _battFilter[i];
+    }
+    uint16_t filtered = sum / count;
+
+    // Apply hysteresis: only change reported value if difference > 20mV
+    if (_lastReportedMV == 0 || abs((int)filtered - (int)_lastReportedMV) > 20) {
+        _lastReportedMV = filtered;
+    }
+
+    return _lastReportedMV;
 }
 
 uint8_t TDeckBoard::getBatteryPercent() {
@@ -105,8 +172,11 @@ void TDeckBoard::reboot() {
 }
 
 void TDeckBoard::powerOff() {
-    // T-Deck doesn't have true power off, enter deep sleep instead
-    enterDeepSleep(0, PIN_TRACKBALL_CLICK);
+    // T-Deck doesn't have true power off capability
+    // NOTE: Deep sleep removed - it corrupts GPIO 0 (trackball click)
+    // Instead, we'll just reboot which is the safest option
+    Serial.println("[BOARD] powerOff() called - rebooting instead");
+    reboot();
 }
 
 uint8_t TDeckBoard::getStartupReason() const {
@@ -121,40 +191,9 @@ void TDeckBoard::onAfterTransmit() {
     // Could toggle TX LED here if available
 }
 
-void TDeckBoard::enterDeepSleep(uint32_t secs, int pin_wake_btn) {
-    Serial.println("[BOARD] Entering deep sleep...");
-    Serial.flush();
-
-    // Configure RTC domain to stay powered
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
-
-    // Configure LoRa DIO1 as wake source (packet received)
-    rtc_gpio_set_direction((gpio_num_t)PIN_LORA_DIO1, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pulldown_en((gpio_num_t)PIN_LORA_DIO1);
-
-    // Hold LoRa NSS high during sleep
-    rtc_gpio_hold_en((gpio_num_t)PIN_LORA_CS);
-
-    // Configure wake sources
-    if (pin_wake_btn < 0) {
-        // Wake on LoRa packet only
-        esp_sleep_enable_ext1_wakeup((1ULL << PIN_LORA_DIO1), ESP_EXT1_WAKEUP_ANY_HIGH);
-    } else {
-        // Wake on LoRa packet OR button press
-        esp_sleep_enable_ext1_wakeup(
-            (1ULL << PIN_LORA_DIO1) | (1ULL << pin_wake_btn),
-            ESP_EXT1_WAKEUP_ANY_HIGH
-        );
-    }
-
-    // Configure timer wake if requested
-    if (secs > 0) {
-        esp_sleep_enable_timer_wakeup(secs * 1000000ULL);
-    }
-
-    // Enter deep sleep (never returns)
-    esp_deep_sleep_start();
-}
+// NOTE: enterDeepSleep() removed - it corrupts GPIO 0 (trackball click) due to
+// rtc_gpio_init() on strapping pins, and GPIO 45 (LoRa DIO1) is not RTC-capable
+// on ESP32-S3. Use Power::enterLightSleep() instead for power saving.
 
 void TDeckBoard::setPeripheralPower(bool enabled) {
     digitalWrite(PIN_PERIPHERAL_POWER, enabled ? HIGH : LOW);

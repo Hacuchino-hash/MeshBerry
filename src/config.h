@@ -46,12 +46,21 @@
 
 #define PIN_KB_SDA      18
 #define PIN_KB_SCL      8
+#define PIN_KB_INT      46      // Keyboard interrupt (ESP32-C3 GPIO8 -> ESP32-S3 GPIO46)
 #define KB_I2C_ADDR     0x55    // Keyboard controller I2C address
 #define KB_REG_READ     0x00    // Register to read key codes
 #define KB_REG_BL       0x01    // Register for backlight control
 
 // I2C settings
 #define KB_I2C_FREQ     400000  // 400kHz
+
+// =============================================================================
+// TOUCH SCREEN - GT911 Capacitive Touch Controller
+// Shares I2C bus with keyboard (SDA=18, SCL=8)
+// =============================================================================
+
+#define PIN_TOUCH_INT       16      // Touch interrupt pin
+#define TOUCH_I2C_ADDR      0x5D    // GT911 default address (alt: 0x14)
 
 // =============================================================================
 // TRACKBALL - GPIO inputs

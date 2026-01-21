@@ -40,8 +40,9 @@ public:
      * @param channelIdx Channel index (0-7)
      * @param senderAndText Message in "Sender: text" format
      * @param timestamp Message timestamp
+     * @param hops Hop count (0 = direct/unknown)
      */
-    static void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp);
+    static void onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops = 0);
 
     /**
      * Get total unread count across all channels

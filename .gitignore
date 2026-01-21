@@ -153,3 +153,4 @@ coverage/
 # MeshCore reference repository (cloned for development reference only)
 # This is a separate MIT-licensed project - do NOT commit to our repo
 external/
+meshtastic-firmware/

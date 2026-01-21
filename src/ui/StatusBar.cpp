@@ -192,22 +192,6 @@ void draw() {
         Display::drawTextRight(x, y, battStr, battColor, 1);
         prevBatteryPercent = batteryPercent;
     }
-    x -= 34;
-
-    // Battery icon
-    if (forceRedraw || batteryChanged) {
-        const uint8_t* battIcon;
-        if (batteryPercent > 60) {
-            battIcon = Icons::BATTERY_FULL;
-        } else if (batteryPercent > 30) {
-            battIcon = Icons::BATTERY_MID;
-        } else {
-            battIcon = Icons::BATTERY_LOW;
-        }
-
-        Display::fillRect(x - 10, y - 1, 10, 10, Theme::BG_SECONDARY);
-        Display::drawBitmap(x - 8, y, battIcon, 8, 8, Theme::WHITE);
-    }
 
     lastDrawTime = now;
     forceRedraw = false;

@@ -206,3 +206,34 @@ bool ListView::handleTrackball(bool up, bool down, bool left, bool right, bool c
 
     return false;
 }
+
+bool ListView::handleTouchDrag(int16_t deltaY) {
+    if (_itemCount == 0) return false;
+
+    int visibleCount = _height / _itemHeight;
+    int maxOffset = _itemCount - visibleCount;
+    if (maxOffset < 0) maxOffset = 0;
+
+    // Scroll opposite to drag direction (drag down = scroll up = show earlier items)
+    int pixelThreshold = _itemHeight / 2;  // Half item height triggers scroll
+    if (abs(deltaY) >= pixelThreshold) {
+        int itemDelta = deltaY > 0 ? -1 : 1;  // Drag down = scroll up
+        int newOffset = _scrollOffset + itemDelta;
+
+        if (newOffset < 0) newOffset = 0;
+        if (newOffset > maxOffset) newOffset = maxOffset;
+
+        if (newOffset != _scrollOffset) {
+            _scrollOffset = newOffset;
+            // Keep selection visible
+            if (_selectedIndex < _scrollOffset) {
+                _selectedIndex = _scrollOffset;
+            } else if (_selectedIndex >= _scrollOffset + visibleCount) {
+                _selectedIndex = _scrollOffset + visibleCount - 1;
+            }
+            _needsRedraw = true;
+            return true;
+        }
+    }
+    return false;
+}

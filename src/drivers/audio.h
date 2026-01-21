@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include "../config.h"
+#include "../settings/DeviceSettings.h"  // For AlertTone enum
 
 // =============================================================================
 // AUDIO SETTINGS
@@ -64,6 +65,31 @@ typedef enum {
 } SoundEffect_t;
 
 void playSound(SoundEffect_t sound);
+
+/**
+ * Play low battery warning alert
+ * Three descending tones to indicate low battery
+ */
+void playLowBatteryAlert();
+
+/**
+ * Play charging connected tone
+ * Ascending "power up" sound when charger is plugged in
+ */
+void playChargingConnected();
+
+/**
+ * Play charging complete tone
+ * Triumphant sound when battery is fully charged
+ */
+void playChargingComplete();
+
+/**
+ * Play a configurable alert tone
+ * @param tone AlertTone enum value from DeviceSettings
+ *             TONE_NONE = silent (no sound)
+ */
+void playAlertTone(AlertTone tone);
 
 /**
  * Play audio from buffer

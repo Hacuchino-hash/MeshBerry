@@ -12,6 +12,7 @@
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 #include "../settings/SettingsManager.h"
+#include "../settings/MessageArchive.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -81,10 +82,18 @@ void ChannelsScreen::buildChannelList() {
             _primaryStrings[count][sizeof(_primaryStrings[count]) - 1] = '\0';
         }
 
-        // Secondary string: type only (no "Active" indicator anymore)
-        const char* typeStr = ch.isHashtag ? "Hashtag" : "Custom PSK";
-        strncpy(_secondaryStrings[count], typeStr, sizeof(_secondaryStrings[count]) - 1);
-        _secondaryStrings[count][sizeof(_secondaryStrings[count]) - 1] = '\0';
+        // Secondary string: last message preview or "No messages"
+        int msgCount = MessageArchive::getChannelMessageCount(i);
+        if (msgCount > 0) {
+            // Load just the last message
+            ArchivedMessage lastMsg;
+            MessageArchive::loadChannelMessages(i, &lastMsg, 1);
+            // Format: "sender: text" truncated to fit
+            snprintf(_secondaryStrings[count], sizeof(_secondaryStrings[count]),
+                     "%s: %s", lastMsg.sender, lastMsg.text);
+        } else {
+            strcpy(_secondaryStrings[count], "No messages");
+        }
 
         // Build list item - all channels shown equally
         _channelItems[count] = {
@@ -285,13 +294,13 @@ bool ChannelsScreen::handleInput(const InputData& input) {
 }
 
 bool ChannelsScreen::handleListInput(const InputData& input) {
-    // Left soft key: Add
+    // Left soft key: Add channel
     if (input.event == InputEvent::SOFTKEY_LEFT) {
         startAddChannel();
         return true;
     }
 
-    // Center soft key: Open channel chat
+    // Center soft key or trackball click: Open channel
     if (input.event == InputEvent::SOFTKEY_CENTER ||
         input.event == InputEvent::TRACKBALL_CLICK) {
         openSelectedChannel();
@@ -308,10 +317,10 @@ bool ChannelsScreen::handleListInput(const InputData& input) {
         return true;
     }
 
-    // D key: Delete
+    // A key: Add channel
     if (input.event == InputEvent::KEY_PRESS &&
-        (input.keyChar == 'd' || input.keyChar == 'D')) {
-        startDeleteChannel();
+        (input.keyChar == 'a' || input.keyChar == 'A')) {
+        startAddChannel();
         return true;
     }
 
@@ -323,6 +332,49 @@ bool ChannelsScreen::handleListInput(const InputData& input) {
             false)) {
         _selectedIndex = _listView.getSelectedIndex();
         requestRedraw();
+        return true;
+    }
+
+    // Handle touch tap
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                Screens.goBack();
+            } else if (tx >= 107) {
+                // Center soft key = Open
+                openSelectedChannel();
+            } else {
+                // Left soft key = Add
+                startAddChannel();
+            }
+            return true;
+        }
+
+        // Touch on list area - check if tapping a channel item
+        int16_t listStartY = _listView.getY();
+        if (ty >= listStartY && ty < Theme::SOFTKEY_BAR_Y) {
+            // Calculate which item was tapped (accounting for scroll offset)
+            int itemHeight = _listView.getItemHeight();
+            int listY = ty - listStartY;
+            int visualIdx = listY / itemHeight;
+            int tappedIdx = visualIdx + _listView.getScrollOffset();
+
+            Serial.printf("[CHANNELS] Touch at y=%d, listY=%d, visualIdx=%d, tappedIdx=%d\n",
+                          ty, listY, visualIdx, tappedIdx);
+
+            if (tappedIdx >= 0 && tappedIdx < _listView.getItemCount()) {
+                _selectedIndex = tappedIdx;
+                _listView.setSelectedIndex(_selectedIndex);
+                openSelectedChannel();
+            }
+            return true;
+        }
+
         return true;
     }
 
@@ -441,6 +493,25 @@ bool ChannelsScreen::handleTextInput(const InputData& input) {
 }
 
 bool ChannelsScreen::handleConfirmInput(const InputData& input) {
+    // Handle touch tap for soft keys
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx < 107) {
+                // Left soft key = No (cancel)
+                cancelAction();
+            } else if (tx >= 107 && tx < 214) {
+                // Center soft key = Yes (confirm delete)
+                confirmDelete();
+            }
+            return true;
+        }
+        return true;
+    }
+
     // Left soft key or N: No (cancel)
     if (input.event == InputEvent::SOFTKEY_LEFT ||
         (input.event == InputEvent::KEY_PRESS &&
@@ -512,7 +583,10 @@ void ChannelsScreen::startDeleteChannel() {
 
 void ChannelsScreen::createHashtagChannel() {
     ChannelSettings& channels = SettingsManager::getChannelSettings();
-    int idx = channels.addHashtagChannel(_inputBuffer);
+    // Add # prefix - addHashtagChannel expects the name to start with #
+    char fullName[32];
+    snprintf(fullName, sizeof(fullName), "#%s", _inputBuffer);
+    int idx = channels.addHashtagChannel(fullName);
     if (idx >= 0) {
         SettingsManager::save();
         buildChannelList();

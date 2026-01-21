@@ -201,6 +201,39 @@ bool MessagesScreen::handleInput(const InputData& input) {
         return true;
     }
 
+    // Handle touch tap
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                Screens.goBack();
+            } else if (tx >= 107) {
+                // Center soft key = Open
+                if (_conversationCount > 0) {
+                    onConversationSelected(_listView.getSelectedIndex());
+                }
+            }
+            // Left soft key has no action on this screen
+            return true;
+        }
+
+        // List touch - just select, don't open (use soft key or trackball click to open)
+        int16_t listTop = Theme::CONTENT_Y + 30;
+        if (ty >= listTop && _conversationCount > 0) {
+            int itemIndex = _listView.getScrollOffset() + (ty - listTop) / 48;
+            if (itemIndex >= 0 && itemIndex < _conversationCount) {
+                _listView.setSelectedIndex(itemIndex);
+                requestRedraw();
+                // Don't auto-open - user taps center soft key or trackball click
+            }
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -219,10 +252,14 @@ void MessagesScreen::onConversationSelected(int index) {
 
         // Clear unread count for this channel
         _conversations[index].unreadCount = 0;
+
+        // Update status bar notification badge
+        int unread = getUnreadCount();
+        Screens.setNotificationCount(unread);
     }
 }
 
-void MessagesScreen::onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp) {
+void MessagesScreen::onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops) {
     // Find the conversation for this channel
     for (int i = 0; i < _conversationCount; i++) {
         if (_conversations[i].channelIdx == channelIdx) {
@@ -232,8 +269,8 @@ void MessagesScreen::onChannelMessage(int channelIdx, const char* senderAndText,
             _conversations[i].lastTimestamp = timestamp;
             _conversations[i].unreadCount++;
 
-            // Also forward to ChatScreen if it's showing this channel
-            ChatScreen::addToCurrentChat(channelIdx, senderAndText, timestamp);
+            // Forward to ChatScreen with hop info if it's showing this channel
+            ChatScreen::addToCurrentChat(channelIdx, senderAndText, timestamp, hops);
             return;
         }
     }

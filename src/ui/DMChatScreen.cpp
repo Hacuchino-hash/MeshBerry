@@ -6,11 +6,15 @@
  */
 
 #include "DMChatScreen.h"
+#include "DMSettingsScreen.h"
 #include "SoftKeyBar.h"
 #include "Icons.h"
+#include "Emoji.h"
+#include "EmojiPickerScreen.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 #include "../settings/SettingsManager.h"
+#include "../settings/MessageArchive.h"
 #include "../mesh/MeshBerryMesh.h"
 #include <Arduino.h>
 #include <stdio.h>
@@ -18,6 +22,12 @@
 
 // External mesh instance
 extern MeshBerryMesh* theMesh;
+
+// External emoji picker for getting selected emoji
+extern EmojiPickerScreen emojiPickerScreen;
+
+// External DM settings screen
+extern DMSettingsScreen dmSettingsScreen;
 
 // Static member
 DMChatScreen* DMChatScreen::_instance = nullptr;
@@ -34,10 +44,27 @@ void DMChatScreen::setContact(uint32_t contactId, const char* contactName) {
 
 void DMChatScreen::onEnter() {
     _instance = this;
-    _scrollOffset = 0;
-    _inputPos = 0;
-    _inputBuffer[0] = '\0';
-    _inputMode = false;
+
+    // Check if returning from emoji picker with a selection
+    if (emojiPickerScreen.wasEmojiSelected()) {
+        char emoji[32];  // Buffer for :shortcode: format
+        if (emojiPickerScreen.getSelectedEmoji(emoji)) {
+            // Append emoji shortcode to input buffer
+            size_t emojiLen = strlen(emoji);
+            if (_inputPos + emojiLen < sizeof(_inputBuffer) - 1) {
+                memcpy(_inputBuffer + _inputPos, emoji, emojiLen);
+                _inputPos += emojiLen;
+                _inputBuffer[_inputPos] = '\0';
+            }
+        }
+        // Stay in input mode after inserting emoji
+        _inputMode = true;
+    } else if (_inputPos == 0) {
+        // Fresh entry - reset scroll state
+        _scrollOffset = 0;
+        _inputBuffer[0] = '\0';
+        _inputMode = false;
+    }
 
     // Mark conversation as read
     DMSettings& dms = SettingsManager::getDMSettings();
@@ -46,6 +73,10 @@ void DMChatScreen::onEnter() {
         DMConversation* conv = dms.getConversation(convIdx);
         if (conv) {
             conv->markAsRead();
+
+            // Update status bar notification badge
+            int unread = dms.getTotalUnreadCount();
+            Screens.setNotificationCount(unread);
         }
     }
 
@@ -65,9 +96,9 @@ const char* DMChatScreen::getTitle() const {
 
 void DMChatScreen::configureSoftKeys() {
     if (_inputMode) {
-        SoftKeyBar::setLabels("Clear", "Send", "Cancel");
+        SoftKeyBar::setLabels("Emoji", "Send", "Cancel");
     } else {
-        SoftKeyBar::setLabels("Type", nullptr, "Back");
+        SoftKeyBar::setLabels("Type", "Route", "Back");
     }
 }
 
@@ -98,7 +129,7 @@ void DMChatScreen::drawMessages(bool fullRedraw) {
     // Message area: from header to input bar
     int16_t msgY = Theme::CONTENT_Y + 26;
     int16_t msgHeight = Theme::CONTENT_HEIGHT - 26 - 28;  // Header and input bar
-    int16_t lineHeight = 12;
+    int16_t maxY = msgY + msgHeight;
 
     // Clear message area
     Display::fillRect(0, msgY, Theme::SCREEN_WIDTH, msgHeight, Theme::BG_PRIMARY);
@@ -128,44 +159,67 @@ void DMChatScreen::drawMessages(bool fullRedraw) {
         return;
     }
 
-    // Calculate how many messages we can show
-    int visibleLines = msgHeight / lineHeight;
-    int startIdx = conv->messageCount - visibleLines - _scrollOffset;
-    if (startIdx < 0) startIdx = 0;
+    // Estimate visible messages with wrapping (~3 lines per message average)
+    int estVisibleMsgs = msgHeight / 30;
+    int displayStartIdx = conv->messageCount - estVisibleMsgs - _scrollOffset;
+    if (displayStartIdx < 0) displayStartIdx = 0;
 
     int16_t y = msgY + 2;
-    for (int i = startIdx; i < conv->messageCount && y < msgY + msgHeight - lineHeight; i++) {
+    for (int i = displayStartIdx; i < conv->messageCount && y < maxY - 10; i++) {
         const DMMessage* msg = conv->getMessage(i);
         if (!msg) continue;
 
-        // Format: "> message" for outgoing, "< message" for incoming
-        char line[160];
+        // Format: "> message [status]" for outgoing, "< message" for incoming
+        char line[220];
         if (msg->isOutgoing) {
-            snprintf(line, sizeof(line), "> %s", msg->text);
+            // Add delivery status indicator for outgoing messages
+            const char* statusStr = "";
+            switch (msg->status) {
+                case DM_STATUS_SENDING:   statusStr = " ..."; break;
+                case DM_STATUS_SENT:      statusStr = " [Sent]"; break;
+                case DM_STATUS_DELIVERED: statusStr = " [OK]"; break;
+                case DM_STATUS_FAILED:    statusStr = " [FAIL]"; break;
+            }
+            snprintf(line, sizeof(line), "> %s%s", msg->text, statusStr);
         } else {
             snprintf(line, sizeof(line), "< %s", msg->text);
         }
 
-        // Truncate to fit screen
-        const char* displayText = Theme::truncateText(line, Theme::SCREEN_WIDTH - 16, 1);
+        // Wrap text into multiple lines
+        char wrappedLines[4][64];
+        int lineCount = Theme::wrapText(line, Theme::SCREEN_WIDTH - 20, 1, wrappedLines, 4);
 
-        // Color: outgoing = accent (blue), incoming = green
-        uint16_t textColor = msg->isOutgoing ? Theme::ACCENT : Theme::GREEN;
-        Display::drawText(8, y, displayText, textColor, 1);
+        // Color: outgoing = accent (blue), incoming = green, failed = red
+        uint16_t textColor;
+        if (msg->isOutgoing) {
+            if (msg->status == DM_STATUS_FAILED) {
+                textColor = Theme::RED;
+            } else if (msg->status == DM_STATUS_DELIVERED) {
+                textColor = Theme::GREEN;  // Green for confirmed delivery
+            } else {
+                textColor = Theme::ACCENT;  // Blue for sending/sent
+            }
+        } else {
+            textColor = Theme::GREEN;
+        }
 
-        y += lineHeight;
+        // Draw each wrapped line
+        for (int ln = 0; ln < lineCount && y < maxY - 10; ln++) {
+            Display::drawTextWithEmoji(8, y, wrappedLines[ln], textColor, 1);
+            y += 10;
+        }
+
+        y += 2;  // Gap between messages
     }
 
-    // Scroll indicator if needed
-    if (conv->messageCount > visibleLines) {
-        if (_scrollOffset > 0) {
-            Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
-                               Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
-        }
-        if (startIdx > 0) {
-            Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + msgHeight - 10,
-                               Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
-        }
+    // Scroll indicators
+    if (_scrollOffset > 0) {
+        Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
+                           Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
+    }
+    if (displayStartIdx > 0) {
+        Display::drawBitmap(Theme::SCREEN_WIDTH - 12, maxY - 10,
+                           Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
     }
 }
 
@@ -196,7 +250,8 @@ void DMChatScreen::drawInputBar() {
         if (_inputPos > maxChars) {
             displayText = _inputBuffer + (_inputPos - maxChars);
         }
-        Display::drawText(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
+        // Use drawTextWithEmoji to properly render emoji glyphs
+        Display::drawTextWithEmoji(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
 
         // Cursor (blinking)
         if (_inputMode && (millis() / 500) % 2 == 0) {
@@ -211,13 +266,55 @@ void DMChatScreen::drawInputBar() {
 }
 
 bool DMChatScreen::handleInput(const InputData& input) {
+    // Handle touch tap for soft keys (works in both modes)
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (_inputMode) {
+                // Input mode: Emoji | Send | Cancel
+                if (tx >= 214) {
+                    // Right soft key = Cancel/Back
+                    Screens.goBack();
+                } else if (tx >= 107) {
+                    // Center soft key = Send
+                    if (_inputPos > 0) {
+                        sendMessage();
+                    }
+                } else {
+                    // Left soft key = Emoji picker
+                    Screens.navigateTo(ScreenId::EMOJI_PICKER);
+                }
+            } else {
+                // Normal mode: Type | Route | Back
+                if (tx >= 214) {
+                    // Right soft key = Back
+                    Screens.goBack();
+                } else if (tx >= 107) {
+                    // Center soft key = Route settings
+                    dmSettingsScreen.setContact(_contactId);
+                    Screens.navigateTo(ScreenId::DM_SETTINGS);
+                } else {
+                    // Left soft key = Type (enter input mode)
+                    _inputMode = true;
+                    configureSoftKeys();
+                    SoftKeyBar::redraw();
+                    requestRedraw();
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
     if (_inputMode) {
         // In text input mode
         switch (input.event) {
             case InputEvent::SOFTKEY_LEFT:
-                // Clear input
-                clearInput();
-                requestRedraw();
+                // Open emoji picker
+                Screens.navigateTo(ScreenId::EMOJI_PICKER);
                 return true;
 
             case InputEvent::SOFTKEY_CENTER:
@@ -228,11 +325,19 @@ bool DMChatScreen::handleInput(const InputData& input) {
                 return true;
 
             case InputEvent::SOFTKEY_RIGHT:
-                // Cancel input mode
-                _inputMode = false;
-                configureSoftKeys();
-                SoftKeyBar::redraw();
-                requestRedraw();
+            case InputEvent::BACK:
+                // Back to contacts (discard input)
+                Screens.goBack();
+                return true;
+
+            case InputEvent::TRACKBALL_CLICK:
+                // Space key comes in as TRACKBALL_CLICK (workaround for T-Deck GPIO 0 issue)
+                // Insert space character when in input mode
+                if (_inputPos < (int)sizeof(_inputBuffer) - 1) {
+                    _inputBuffer[_inputPos++] = ' ';
+                    _inputBuffer[_inputPos] = '\0';
+                    requestRedraw();
+                }
                 return true;
 
             case InputEvent::KEY_PRESS:
@@ -253,14 +358,6 @@ bool DMChatScreen::handleInput(const InputData& input) {
                 }
                 return true;
 
-            case InputEvent::BACK:
-                // Exit input mode
-                _inputMode = false;
-                configureSoftKeys();
-                SoftKeyBar::redraw();
-                requestRedraw();
-                return true;
-
             default:
                 return false;
         }
@@ -274,6 +371,12 @@ bool DMChatScreen::handleInput(const InputData& input) {
                 configureSoftKeys();
                 SoftKeyBar::redraw();
                 requestRedraw();
+                return true;
+
+            case InputEvent::SOFTKEY_CENTER:
+                // Open DM routing settings
+                dmSettingsScreen.setContact(_contactId);
+                Screens.navigateTo(ScreenId::DM_SETTINGS);
                 return true;
 
             case InputEvent::SOFTKEY_RIGHT:
@@ -334,16 +437,31 @@ int DMChatScreen::getVisibleMessageCount() const {
 void DMChatScreen::sendMessage() {
     if (_inputPos == 0 || !theMesh) return;
 
-    // Send via mesh
-    if (theMesh->sendDirectMessage(_contactId, _inputBuffer)) {
-        // Store in DMSettings as outgoing
+    // Convert shortcodes like :smile: to emoji
+    Emoji::convertShortcodes(_inputBuffer, sizeof(_inputBuffer));
+
+    // Send via mesh - get ACK CRC for delivery tracking
+    uint32_t ack_crc = 0;
+    if (theMesh->sendDirectMessage(_contactId, _inputBuffer, &ack_crc)) {
+        // Store in DMSettings as outgoing with ACK CRC for status tracking
         uint32_t timestamp = millis() / 1000;  // Simple timestamp
         if (theMesh->getRTCClock()) {
             timestamp = theMesh->getRTCClock()->getCurrentTime();
         }
 
         DMSettings& dms = SettingsManager::getDMSettings();
-        dms.addMessage(_contactId, _inputBuffer, true, timestamp);
+        dms.addMessage(_contactId, _inputBuffer, true, timestamp, ack_crc);
+
+        // Also persist to archive for extended history
+        ArchivedMessage archived;
+        archived.clear();
+        archived.timestamp = timestamp;
+        strncpy(archived.sender, theMesh->getNodeName(), ARCHIVE_SENDER_LEN - 1);
+        archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
+        strncpy(archived.text, _inputBuffer, ARCHIVE_TEXT_LEN - 1);
+        archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
+        archived.isOutgoing = 1;
+        MessageArchive::saveDMMessage(_contactId, archived);
 
         // Auto-scroll to bottom
         _scrollOffset = 0;

@@ -214,8 +214,12 @@ static bool loadChannels() {
 
         // Decode base64 secret
         const char* secretB64 = ch["secret"] | "";
+        Serial.printf("[SETTINGS] Loading channel '%s', secret base64: '%s'\n", entry.name, secretB64);
         if (strlen(secretB64) > 0) {
             int decodedLen = ChannelCrypto::decodePSK(secretB64, entry.secret, sizeof(entry.secret));
+            Serial.printf("[SETTINGS] Decoded %d bytes: ", decodedLen);
+            for (int i = 0; i < decodedLen && i < 8; i++) Serial.printf("%02X ", entry.secret[i]);
+            Serial.println("...");
             if (decodedLen > 0) {
                 entry.secretLen = decodedLen;
                 // IMPORTANT: Recalculate hash from the decoded secret
@@ -380,7 +384,7 @@ static bool loadContacts() {
         entry.lastSnr = c["lastSnr"] | 0.0f;
         entry.lastHeard = c["lastHeard"] | 0;
         entry.isFavorite = c["isFavorite"] | false;
-        entry.isActive = c["isActive"] | false;
+        entry.isActive = c["isActive"] | true;  // Default to true for loaded contacts
 
         // Load pubKey (base64 encoded)
         const char* pubKeyB64 = c["pubKey"] | "";
@@ -637,15 +641,25 @@ static bool loadDevice() {
     // Display settings
     deviceSettings.backlightTimeout = doc["backlightTimeout"] | 30;
 
-    // Power saving settings
-    deviceSettings.powerSavingEnabled = doc["powerSavingEnabled"] | false;
+    // Sleep settings (always enabled, light sleep by default)
+    deviceSettings.useDeepSleep = doc["useDeepSleep"] | false;
     deviceSettings.sleepTimeoutSecs = doc["sleepTimeoutSecs"] | 120;
     deviceSettings.sleepDurationSecs = doc["sleepDurationSecs"] | 1800;
     deviceSettings.wakeOnLoRa = doc["wakeOnLoRa"] | true;
     deviceSettings.wakeOnButton = doc["wakeOnButton"] | true;
 
-    Serial.printf("[SETTINGS] Device settings loaded: gpsEnabled=%d, gpsRtcSync=%d, powerSave=%d\n",
-                  deviceSettings.gpsEnabled, deviceSettings.gpsRtcSyncEnabled, deviceSettings.powerSavingEnabled);
+    // Audio settings
+    deviceSettings.audioVolume = doc["audioVolume"] | 80;
+    deviceSettings.audioMuted = doc["audioMuted"] | false;
+    deviceSettings.toneMessage = (AlertTone)(doc["toneMessage"] | (uint8_t)TONE_BBM_PING);
+    deviceSettings.toneNodeConnect = (AlertTone)(doc["toneNodeConnect"] | (uint8_t)TONE_ASCENDING);
+    deviceSettings.toneLowBattery = (AlertTone)(doc["toneLowBattery"] | (uint8_t)TONE_WARNING);
+    deviceSettings.toneSent = (AlertTone)(doc["toneSent"] | (uint8_t)TONE_CHIRP);
+    deviceSettings.toneError = (AlertTone)(doc["toneError"] | (uint8_t)TONE_DESCENDING);
+
+    Serial.printf("[SETTINGS] Device settings loaded: gpsEnabled=%d, gpsRtcSync=%d, deepSleep=%d, vol=%d\n",
+                  deviceSettings.gpsEnabled, deviceSettings.gpsRtcSyncEnabled,
+                  deviceSettings.useDeepSleep, deviceSettings.audioVolume);
     return true;
 }
 
@@ -667,12 +681,21 @@ static bool saveDeviceInternal() {
     // Display settings
     doc["backlightTimeout"] = deviceSettings.backlightTimeout;
 
-    // Power saving settings
-    doc["powerSavingEnabled"] = deviceSettings.powerSavingEnabled;
+    // Sleep settings
+    doc["useDeepSleep"] = deviceSettings.useDeepSleep;
     doc["sleepTimeoutSecs"] = deviceSettings.sleepTimeoutSecs;
     doc["sleepDurationSecs"] = deviceSettings.sleepDurationSecs;
     doc["wakeOnLoRa"] = deviceSettings.wakeOnLoRa;
     doc["wakeOnButton"] = deviceSettings.wakeOnButton;
+
+    // Audio settings
+    doc["audioVolume"] = deviceSettings.audioVolume;
+    doc["audioMuted"] = deviceSettings.audioMuted;
+    doc["toneMessage"] = (uint8_t)deviceSettings.toneMessage;
+    doc["toneNodeConnect"] = (uint8_t)deviceSettings.toneNodeConnect;
+    doc["toneLowBattery"] = (uint8_t)deviceSettings.toneLowBattery;
+    doc["toneSent"] = (uint8_t)deviceSettings.toneSent;
+    doc["toneError"] = (uint8_t)deviceSettings.toneError;
 
     if (serializeJson(doc, file) == 0) {
         Serial.println("[SETTINGS] Failed to write device settings");

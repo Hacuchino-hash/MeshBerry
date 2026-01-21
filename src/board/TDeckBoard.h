@@ -88,12 +88,9 @@ public:
      */
     void onAfterTransmit() override;
 
-    /**
-     * Enter deep sleep with LoRa wake capability
-     * @param secs Seconds until timer wake (0 = no timer)
-     * @param pin_wake_btn GPIO for button wake (-1 = no button wake)
-     */
-    void enterDeepSleep(uint32_t secs, int pin_wake_btn = -1);
+    // NOTE: Deep sleep removed - it corrupts GPIO 0 (trackball click) due to
+    // rtc_gpio_init() on strapping pins, and GPIO 45 (LoRa DIO1) is not RTC-capable
+    // on ESP32-S3. Use Power::enterLightSleep() instead.
 
     /**
      * Enable/disable peripheral power
@@ -108,6 +105,13 @@ public:
 private:
     uint8_t _startup_reason;
     bool _peripheral_power_on;
+
+    // Battery filtering for stable readings
+    static constexpr int BATT_FILTER_SIZE = 4;
+    uint16_t _battFilter[BATT_FILTER_SIZE] = {0};
+    int _battFilterIdx = 0;
+    bool _battFilterFilled = false;
+    uint16_t _lastReportedMV = 0;
 };
 
 #endif // MESHBERRY_TDECK_BOARD_H

@@ -8,9 +8,12 @@
 #include "ChatScreen.h"
 #include "SoftKeyBar.h"
 #include "Icons.h"
+#include "Emoji.h"
+#include "EmojiPickerScreen.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 #include "../settings/SettingsManager.h"
+#include "../settings/MessageArchive.h"
 #include "../mesh/MeshBerryMesh.h"
 #include <Arduino.h>
 #include <stdio.h>
@@ -18,6 +21,9 @@
 
 // External mesh instance
 extern MeshBerryMesh* theMesh;
+
+// External emoji picker for getting selected emoji
+extern EmojiPickerScreen emojiPickerScreen;
 
 // Static member
 ChatScreen* ChatScreen::_instance = nullptr;
@@ -37,11 +43,53 @@ void ChatScreen::setChannel(int channelIdx) {
 
 void ChatScreen::onEnter() {
     _instance = this;
-    _messageCount = 0;
-    _scrollOffset = 0;
-    _inputPos = 0;
-    _inputBuffer[0] = '\0';
-    _inputMode = false;
+
+    // Check if returning from emoji picker with a selection
+    if (emojiPickerScreen.wasEmojiSelected()) {
+        char emoji[32];  // Buffer for :shortcode: format
+        if (emojiPickerScreen.getSelectedEmoji(emoji)) {
+            // Append emoji shortcode to input buffer
+            size_t emojiLen = strlen(emoji);
+            if (_inputPos + emojiLen < sizeof(_inputBuffer) - 1) {
+                memcpy(_inputBuffer + _inputPos, emoji, emojiLen);
+                _inputPos += emojiLen;
+                _inputBuffer[_inputPos] = '\0';
+            }
+        }
+        // Stay in input mode after inserting emoji
+        _inputMode = true;
+    } else {
+        // Fresh entry - ALWAYS reset state (channel may have changed)
+        _messageCount = 0;
+        _scrollOffset = 0;
+        _inputBuffer[0] = '\0';
+        _inputPos = 0;
+        _inputMode = false;
+
+        // Load messages from archive for THIS channel
+        ArchivedMessage* archived = new ArchivedMessage[MAX_CHAT_MESSAGES];
+        if (archived) {
+            int count = MessageArchive::loadChannelMessages(_channelIdx, archived, MAX_CHAT_MESSAGES);
+            for (int i = 0; i < count; i++) {
+                // Add directly to array without re-saving
+                if (_messageCount < MAX_CHAT_MESSAGES) {
+                    ChatMessage& msg = _messages[_messageCount++];
+                    strncpy(msg.sender, archived[i].sender, sizeof(msg.sender) - 1);
+                    msg.sender[sizeof(msg.sender) - 1] = '\0';
+                    strncpy(msg.text, archived[i].text, sizeof(msg.text) - 1);
+                    msg.text[sizeof(msg.text) - 1] = '\0';
+                    msg.timestamp = archived[i].timestamp;
+                    msg.isOutgoing = archived[i].isOutgoing;
+                    msg.contentHash = 0;   // No hash for archived messages
+                    msg.repeatCount = 0;
+                    msg.hops = 0;          // No hop info in archive
+                }
+            }
+            delete[] archived;
+            Serial.printf("[CHAT] Loaded %d messages for channel %d\n", _messageCount, _channelIdx);
+        }
+    }
+
     requestRedraw();
 }
 
@@ -55,7 +103,7 @@ const char* ChatScreen::getTitle() const {
 
 void ChatScreen::configureSoftKeys() {
     if (_inputMode) {
-        SoftKeyBar::setLabels("Clear", "Send", "Cancel");
+        SoftKeyBar::setLabels("Emoji", "Send", "Cancel");
     } else {
         SoftKeyBar::setLabels("Type", nullptr, "Back");
     }
@@ -85,7 +133,7 @@ void ChatScreen::drawMessages(bool fullRedraw) {
     // Message area: from header to input bar
     int16_t msgY = Theme::CONTENT_Y + 26;
     int16_t msgHeight = Theme::CONTENT_HEIGHT - 26 - 28;  // Header and input bar
-    int16_t lineHeight = 12;  // Each message line
+    int16_t maxY = msgY + msgHeight;
 
     // Clear message area
     Display::fillRect(0, msgY, Theme::SCREEN_WIDTH, msgHeight, Theme::BG_PRIMARY);
@@ -100,43 +148,78 @@ void ChatScreen::drawMessages(bool fullRedraw) {
         return;
     }
 
-    // Calculate how many messages we can show
-    int visibleLines = msgHeight / lineHeight;
-    int startIdx = _messageCount - visibleLines - _scrollOffset;
+    // Start from the most recent messages and work backward
+    // We use _scrollOffset to skip the most recent N messages when scrolled
+    int startIdx = (_messageCount - 1) - _scrollOffset;
     if (startIdx < 0) startIdx = 0;
 
+    // First pass: figure out how many messages fit by working backward
+    // For now, simpler approach: just render from startIdx going backward until we fill
     int16_t y = msgY + 2;
-    for (int i = startIdx; i < _messageCount && y < msgY + msgHeight - lineHeight; i++) {
+    for (int i = 0; i <= startIdx && y < maxY - 10; i++) {
+        int msgIdx = startIdx - i + _scrollOffset;
+        if (msgIdx < 0 || msgIdx >= _messageCount) continue;
+
+        // Recalculate - we want oldest to newest, so start from (startIdx - visible) and go up
+    }
+
+    // Simpler approach: calculate visible count and render oldest to newest
+    // Estimate ~3 lines per message average with wrapping
+    int estVisibleMsgs = msgHeight / 30;  // Rough estimate
+    int displayStartIdx = _messageCount - estVisibleMsgs - _scrollOffset;
+    if (displayStartIdx < 0) displayStartIdx = 0;
+
+    y = msgY + 2;
+    for (int i = displayStartIdx; i < _messageCount && y < maxY - 10; i++) {
         const ChatMessage& msg = _messages[i];
 
         // Format: "Sender: message" or "> message" for outgoing
-        char line[160];
+        char line[192];
         if (msg.isOutgoing) {
             snprintf(line, sizeof(line), "> %s", msg.text);
         } else {
             snprintf(line, sizeof(line), "%s: %s", msg.sender, msg.text);
         }
 
-        // Truncate to fit screen
-        const char* displayText = Theme::truncateText(line, Theme::SCREEN_WIDTH - 16, 1);
+        // Wrap text into multiple lines
+        char wrappedLines[4][64];
+        int lineCount = Theme::wrapText(line, Theme::SCREEN_WIDTH - 20, 1, wrappedLines, 4);
 
         // Color: outgoing = accent, incoming = white
         uint16_t textColor = msg.isOutgoing ? Theme::ACCENT : Theme::WHITE;
-        Display::drawText(8, y, displayText, textColor, 1);
 
-        y += lineHeight;
+        // Draw each wrapped line
+        for (int ln = 0; ln < lineCount && y < maxY - 10; ln++) {
+            Display::drawTextWithEmoji(8, y, wrappedLines[ln], textColor, 1);
+            y += 10;
+        }
+
+        // Show metadata below message
+        if (msg.isOutgoing && msg.repeatCount > 0) {
+            // Show repeat count for outgoing messages
+            char repeatStr[24];
+            snprintf(repeatStr, sizeof(repeatStr), "  x%d repeats", msg.repeatCount);
+            Display::drawText(8, y, repeatStr, Theme::GRAY_LIGHT, 1);
+            y += 8;
+        } else if (!msg.isOutgoing && msg.hops > 0) {
+            // Show hop count for incoming messages
+            char hopStr[24];
+            snprintf(hopStr, sizeof(hopStr), "  %d hop%s", msg.hops, msg.hops > 1 ? "s" : "");
+            Display::drawText(8, y, hopStr, Theme::GRAY_LIGHT, 1);
+            y += 8;
+        }
+
+        y += 2;  // Gap between messages
     }
 
-    // Scroll indicator if needed
-    if (_messageCount > visibleLines) {
-        if (_scrollOffset > 0) {
-            Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
-                               Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
-        }
-        if (startIdx > 0) {
-            Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + msgHeight - 10,
-                               Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
-        }
+    // Scroll indicators
+    if (_scrollOffset > 0) {
+        Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
+                           Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
+    }
+    if (displayStartIdx > 0) {
+        Display::drawBitmap(Theme::SCREEN_WIDTH - 12, maxY - 10,
+                           Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
     }
 }
 
@@ -167,7 +250,8 @@ void ChatScreen::drawInputBar() {
         if (_inputPos > maxChars) {
             displayText = _inputBuffer + (_inputPos - maxChars);
         }
-        Display::drawText(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
+        // Use drawTextWithEmoji to properly render emoji glyphs
+        Display::drawTextWithEmoji(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
 
         // Cursor (blinking)
         if (_inputMode && (millis() / 500) % 2 == 0) {
@@ -182,13 +266,51 @@ void ChatScreen::drawInputBar() {
 }
 
 bool ChatScreen::handleInput(const InputData& input) {
+    // Handle touch tap for soft keys (works in both modes)
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (_inputMode) {
+                // Input mode: Emoji | Send | Cancel
+                if (tx >= 214) {
+                    // Right soft key = Cancel/Back
+                    Screens.goBack();
+                } else if (tx >= 107) {
+                    // Center soft key = Send
+                    if (_inputPos > 0) {
+                        sendMessage();
+                    }
+                } else {
+                    // Left soft key = Emoji picker
+                    Screens.navigateTo(ScreenId::EMOJI_PICKER);
+                }
+            } else {
+                // Normal mode: Type | (none) | Back
+                if (tx >= 214) {
+                    // Right soft key = Back
+                    Screens.goBack();
+                } else if (tx < 107) {
+                    // Left soft key = Type (enter input mode)
+                    _inputMode = true;
+                    configureSoftKeys();
+                    SoftKeyBar::redraw();
+                    requestRedraw();
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
     if (_inputMode) {
         // In text input mode
         switch (input.event) {
             case InputEvent::SOFTKEY_LEFT:
-                // Clear input
-                clearInput();
-                requestRedraw();
+                // Open emoji picker
+                Screens.navigateTo(ScreenId::EMOJI_PICKER);
                 return true;
 
             case InputEvent::SOFTKEY_CENTER:
@@ -199,11 +321,19 @@ bool ChatScreen::handleInput(const InputData& input) {
                 return true;
 
             case InputEvent::SOFTKEY_RIGHT:
-                // Cancel input mode
-                _inputMode = false;
-                configureSoftKeys();
-                SoftKeyBar::redraw();
-                requestRedraw();
+            case InputEvent::BACK:
+                // Back to messages (discard input)
+                Screens.goBack();
+                return true;
+
+            case InputEvent::TRACKBALL_CLICK:
+                // Space key comes in as TRACKBALL_CLICK (workaround for T-Deck GPIO 0 issue)
+                // Insert space character when in input mode
+                if (_inputPos < (int)sizeof(_inputBuffer) - 1) {
+                    _inputBuffer[_inputPos++] = ' ';
+                    _inputBuffer[_inputPos] = '\0';
+                    requestRedraw();
+                }
                 return true;
 
             case InputEvent::KEY_PRESS:
@@ -222,14 +352,6 @@ bool ChatScreen::handleInput(const InputData& input) {
                     // Send on Enter
                     sendMessage();
                 }
-                return true;
-
-            case InputEvent::BACK:
-                // Exit input mode
-                _inputMode = false;
-                configureSoftKeys();
-                SoftKeyBar::redraw();
-                requestRedraw();
                 return true;
 
             default:
@@ -298,10 +420,21 @@ int ChatScreen::getVisibleMessageCount() const {
 void ChatScreen::sendMessage() {
     if (_inputPos == 0 || !theMesh) return;
 
+    // Convert shortcodes like :smile: to emoji
+    Emoji::convertShortcodes(_inputBuffer, sizeof(_inputBuffer));
+
+    // Compute content hash BEFORE sending (for repeat tracking)
+    uint32_t contentHash = hashMessage(_channelIdx, _inputBuffer);
+
     // Send to channel
     if (theMesh->sendToChannel(_channelIdx, _inputBuffer)) {
-        // Add to local display
-        addMessage(theMesh->getNodeName(), _inputBuffer, millis() / 1000, true);
+        // Add to local display with content hash for repeat tracking
+        addMessage(theMesh->getNodeName(), _inputBuffer, millis() / 1000, true, 0);
+
+        // Store the content hash in the most recently added message
+        if (_messageCount > 0) {
+            _messages[_messageCount - 1].contentHash = contentHash;
+        }
     }
 
     // Clear input and exit input mode
@@ -317,7 +450,7 @@ void ChatScreen::clearInput() {
     _inputPos = 0;
 }
 
-void ChatScreen::addMessage(const char* sender, const char* text, uint32_t timestamp, bool isOutgoing) {
+void ChatScreen::addMessage(const char* sender, const char* text, uint32_t timestamp, bool isOutgoing, uint8_t hops) {
     // Shift messages if full
     if (_messageCount >= MAX_CHAT_MESSAGES) {
         for (int i = 0; i < MAX_CHAT_MESSAGES - 1; i++) {
@@ -334,6 +467,20 @@ void ChatScreen::addMessage(const char* sender, const char* text, uint32_t times
     msg.text[sizeof(msg.text) - 1] = '\0';
     msg.timestamp = timestamp;
     msg.isOutgoing = isOutgoing;
+    msg.contentHash = 0;    // Will be set by sendMessage() for outgoing
+    msg.repeatCount = 0;
+    msg.hops = hops;
+
+    // Persist to archive
+    ArchivedMessage archived;
+    archived.clear();
+    archived.timestamp = timestamp;
+    strncpy(archived.sender, sender, ARCHIVE_SENDER_LEN - 1);
+    archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
+    strncpy(archived.text, text, ARCHIVE_TEXT_LEN - 1);
+    archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
+    archived.isOutgoing = isOutgoing ? 1 : 0;
+    MessageArchive::saveChannelMessage(_channelIdx, archived);
 
     // Auto-scroll to bottom
     _scrollOffset = 0;
@@ -364,13 +511,48 @@ void ChatScreen::parseSenderAndText(const char* combined, char* sender, size_t s
     }
 }
 
-void ChatScreen::addToCurrentChat(int channelIdx, const char* senderAndText, uint32_t timestamp) {
+void ChatScreen::addToCurrentChat(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops) {
     if (_instance && _instance->_channelIdx == channelIdx) {
         // Parse sender and text
         char sender[16];
         char text[128];
         parseSenderAndText(senderAndText, sender, sizeof(sender), text, sizeof(text));
 
-        _instance->addMessage(sender, text, timestamp, false);
+        _instance->addMessage(sender, text, timestamp, false, hops);
     }
+}
+
+void ChatScreen::updateRepeatCount(int channelIdx, uint32_t contentHash, uint8_t repeatCount) {
+    if (!_instance || _instance->_channelIdx != channelIdx) return;
+
+    // Search for message with matching hash (search from newest)
+    for (int i = _instance->_messageCount - 1; i >= 0; i--) {
+        ChatMessage& msg = _instance->_messages[i];
+        if (msg.isOutgoing && msg.contentHash == contentHash) {
+            msg.repeatCount = repeatCount;
+            _instance->requestRedraw();
+            Serial.printf("[CHAT] Updated repeat count for msg hash %08X to %d\n", contentHash, repeatCount);
+            return;
+        }
+    }
+}
+
+uint32_t ChatScreen::hashMessage(int channelIdx, const char* text) {
+    // FNV-1a hash - must match MeshBerryMesh::hashChannelMessage()
+    uint32_t hash = 0x811c9dc5;  // FNV-1a offset basis
+    const uint32_t prime = 0x01000193;  // FNV-1a prime
+
+    // Mix in channel index
+    hash ^= (uint32_t)channelIdx;
+    hash *= prime;
+
+    // Mix in text content
+    if (text) {
+        while (*text) {
+            hash ^= (uint8_t)*text++;
+            hash *= prime;
+        }
+    }
+
+    return hash;
 }

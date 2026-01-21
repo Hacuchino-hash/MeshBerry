@@ -31,7 +31,11 @@ enum class InputEvent {
     MENU,            // Menu key
     SOFTKEY_LEFT,    // Left soft key (Q key)
     SOFTKEY_CENTER,  // Center soft key (Enter/Space)
-    SOFTKEY_RIGHT    // Right soft key (ESC/Backspace)
+    SOFTKEY_RIGHT,   // Right soft key (ESC/Backspace)
+    // Touch events
+    TOUCH_TAP,       // Single tap at coordinates
+    TOUCH_DRAG,      // Continuous touch with position delta (for scrolling)
+    TOUCH_RELEASE    // Touch released
 };
 
 /**
@@ -41,10 +45,16 @@ struct InputData {
     InputEvent event;
     uint8_t keyCode;    // Raw key code for KEY_PRESS
     char keyChar;       // ASCII character for KEY_PRESS (0 for special keys)
+    int16_t touchX;     // Touch X coordinate (0-319) for TOUCH_TAP/TOUCH_DRAG
+    int16_t touchY;     // Touch Y coordinate (0-239) for TOUCH_TAP/TOUCH_DRAG
+    int16_t dragDeltaY; // Vertical drag delta for TOUCH_DRAG (scrolling)
 
-    InputData() : event(InputEvent::NONE), keyCode(0), keyChar(0) {}
-    InputData(InputEvent e) : event(e), keyCode(0), keyChar(0) {}
-    InputData(InputEvent e, uint8_t code, char c) : event(e), keyCode(code), keyChar(c) {}
+    InputData() : event(InputEvent::NONE), keyCode(0), keyChar(0), touchX(0), touchY(0), dragDeltaY(0) {}
+    InputData(InputEvent e) : event(e), keyCode(0), keyChar(0), touchX(0), touchY(0), dragDeltaY(0) {}
+    InputData(InputEvent e, uint8_t code, char c) : event(e), keyCode(code), keyChar(c), touchX(0), touchY(0), dragDeltaY(0) {}
+    InputData(InputEvent e, int16_t x, int16_t y) : event(e), keyCode(0), keyChar(0), touchX(x), touchY(y), dragDeltaY(0) {}
+    // Constructor for TOUCH_DRAG with delta
+    InputData(InputEvent e, int16_t x, int16_t y, int16_t dy) : event(e), keyCode(0), keyChar(0), touchX(x), touchY(y), dragDeltaY(dy) {}
 };
 
 /**
@@ -56,6 +66,7 @@ enum class ScreenId {
     MESSAGES,
     CHAT,           // Channel chat view
     DM_CHAT,        // Direct message chat view
+    DM_SETTINGS,    // DM routing settings for a contact
     CONTACTS,
     CONTACT_DETAIL,
     REPEATER_ADMIN, // Repeater administration
@@ -67,7 +78,8 @@ enum class ScreenId {
     STATUS,
     CHANNELS,
     GPS,
-    ABOUT
+    ABOUT,
+    EMOJI_PICKER    // Emoji selection screen
 };
 
 /**

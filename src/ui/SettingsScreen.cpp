@@ -12,6 +12,7 @@
 #include "../drivers/keyboard.h"
 #include "../drivers/lora.h"
 #include "../drivers/gps.h"
+#include "../drivers/audio.h"
 #include "../settings/SettingsManager.h"
 #include "../config.h"
 #include <stdio.h>
@@ -39,7 +40,8 @@ const char* SettingsScreen::getTitle() const {
         case SETTINGS_DISPLAY: return "Display";
         case SETTINGS_NETWORK: return "Network";
         case SETTINGS_GPS:     return "GPS Settings";
-        case SETTINGS_POWER:   return "Power Saving";
+        case SETTINGS_POWER:   return "Sleep Mode";
+        case SETTINGS_AUDIO:   return "Audio";
         case SETTINGS_ABOUT:   return "About";
         default:               return "Settings";
     }
@@ -50,7 +52,7 @@ void SettingsScreen::configureSoftKeys() {
         SoftKeyBar::setLabels("<", "OK", ">");
     } else if (_currentLevel == SETTINGS_MAIN) {
         SoftKeyBar::setLabels(nullptr, "Select", "Back");
-    } else if (_currentLevel == SETTINGS_GPS || _currentLevel == SETTINGS_POWER) {
+    } else if (_currentLevel == SETTINGS_GPS || _currentLevel == SETTINGS_POWER || _currentLevel == SETTINGS_AUDIO) {
         SoftKeyBar::setLabels(nullptr, "Toggle", "Back");
     } else {
         SoftKeyBar::setLabels(nullptr, "Edit", "Back");
@@ -70,9 +72,10 @@ void SettingsScreen::buildMenu() {
             _menuItems[1] = { "Display", "Brightness, timeout", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[2] = { "Network", "Node name, forwarding", Icons::CONTACTS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[3] = { "GPS", "Power, RTC sync options", Icons::GPS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[4] = { "Power", "Deep sleep, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[5] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItemCount = 6;
+            _menuItems[4] = { "Power", "Sleep timeout, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[5] = { "Audio", "Volume, notification tones", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[6] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItemCount = 7;
             break;
 
         case SETTINGS_RADIO:
@@ -131,40 +134,93 @@ void SettingsScreen::buildMenu() {
         }
 
         case SETTINGS_POWER: {
-            // Power saving settings
+            // Sleep mode settings (sleep is always enabled for power savings)
             DeviceSettings& device = SettingsManager::getDeviceSettings();
-
-            _menuItems[0] = { "Power Saving",
-                              device.powerSavingEnabled ? "On" : "Off",
-                              nullptr,
-                              device.powerSavingEnabled ? Theme::GREEN : Theme::GRAY_LIGHT,
-                              false, 0, nullptr };
 
             // Sleep timeout (convert seconds to readable format)
             if (device.sleepTimeoutSecs < 60) {
-                snprintf(_valueStrings[1], 32, "%d sec", device.sleepTimeoutSecs);
+                snprintf(_valueStrings[0], 32, "%d sec", device.sleepTimeoutSecs);
             } else {
-                snprintf(_valueStrings[1], 32, "%d min", device.sleepTimeoutSecs / 60);
+                snprintf(_valueStrings[0], 32, "%d min", device.sleepTimeoutSecs / 60);
             }
-            _menuItems[1] = { "Sleep After",
-                              _valueStrings[1],
+            _menuItems[0] = { "Sleep After",
+                              _valueStrings[0],
                               nullptr,
                               Theme::ACCENT,
                               false, 0, nullptr };
 
-            _menuItems[2] = { "Wake on LoRa",
+            // LoRa wake uses LIGHT SLEEP since GPIO 45 isn't RTC-capable
+            _menuItems[1] = { "Wake on LoRa",
                               device.wakeOnLoRa ? "On" : "Off",
                               nullptr,
                               device.wakeOnLoRa ? Theme::GREEN : Theme::GRAY_LIGHT,
                               false, 0, nullptr };
 
-            _menuItems[3] = { "Wake on Button",
+            _menuItems[2] = { "Wake on Button",
                               device.wakeOnButton ? "On" : "Off",
                               nullptr,
                               device.wakeOnButton ? Theme::GREEN : Theme::GRAY_LIGHT,
                               false, 0, nullptr };
 
+            // Deep sleep option - lower power but reboots on wake, no LoRa wake
+            _menuItems[3] = { "Deep Sleep Mode",
+                              device.useDeepSleep ? "On" : "Off",
+                              nullptr,
+                              device.useDeepSleep ? Theme::ORANGE : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
             _menuItemCount = 4;
+            break;
+        }
+
+        case SETTINGS_AUDIO: {
+            // Audio settings
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+
+            snprintf(_valueStrings[0], 32, "%d%%", device.audioVolume);
+            _menuItems[0] = { "Volume",
+                              _valueStrings[0],
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[1] = { "Mute All",
+                              device.audioMuted ? "On" : "Off",
+                              nullptr,
+                              device.audioMuted ? Theme::RED : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            _menuItems[2] = { "Message Tone",
+                              getAlertToneName(device.toneMessage),
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[3] = { "Connect Tone",
+                              getAlertToneName(device.toneNodeConnect),
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[4] = { "Low Battery",
+                              getAlertToneName(device.toneLowBattery),
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[5] = { "Sent Tone",
+                              getAlertToneName(device.toneSent),
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItems[6] = { "Error Tone",
+                              getAlertToneName(device.toneError),
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            _menuItemCount = 7;
             break;
         }
 
@@ -295,6 +351,7 @@ bool SettingsScreen::handleInput(const InputData& input) {
                     break;
             }
         } else if (input.event == InputEvent::TRACKBALL_CLICK ||
+                   input.event == InputEvent::SOFTKEY_CENTER ||
                    input.event == InputEvent::BACK) {
             // Exit editing mode
             _editingIndex = -1;
@@ -330,7 +387,8 @@ bool SettingsScreen::handleInput(const InputData& input) {
         }
     }
 
-    if (input.event == InputEvent::TRACKBALL_CLICK) {
+    if (input.event == InputEvent::TRACKBALL_CLICK ||
+        input.event == InputEvent::SOFTKEY_CENTER) {
         onItemSelected(_listView.getSelectedIndex());
         return true;
     }
@@ -345,7 +403,54 @@ bool SettingsScreen::handleInput(const InputData& input) {
         return true;
     }
 
+    // Handle touch tap (only when not editing)
+    if (input.event == InputEvent::TOUCH_TAP && _editingIndex < 0) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                if (_currentLevel != SETTINGS_MAIN) {
+                    _currentLevel = SETTINGS_MAIN;
+                    buildMenu();
+                    configureSoftKeys();
+                    requestRedraw();
+                } else {
+                    Screens.goBack();
+                }
+            } else if (tx >= 107) {
+                // Center soft key = Select/Edit/Toggle
+                onItemSelected(_listView.getSelectedIndex());
+            }
+            // Left soft key has no action
+            return true;
+        }
+
+        // List touch - starts at CONTENT_Y + 30 (below title), item height is 40
+        int16_t listTop = Theme::CONTENT_Y + 30;
+        if (ty >= listTop && _menuItemCount > 0) {
+            int itemIndex = _listView.getScrollOffset() + (ty - listTop) / 40;
+            if (itemIndex >= 0 && itemIndex < _menuItemCount) {
+                _listView.setSelectedIndex(itemIndex);
+                requestRedraw();
+                onItemSelected(itemIndex);
+            }
+        }
+        return true;
+    }
+
     return false;
+}
+
+// Helper to cycle through AlertTone values
+static AlertTone cycleAlertTone(AlertTone current) {
+    uint8_t next = (uint8_t)current + 1;
+    if (next >= (uint8_t)TONE_COUNT) {
+        next = 0;  // Wrap to TONE_NONE
+    }
+    return (AlertTone)next;
 }
 
 void SettingsScreen::onItemSelected(int index) {
@@ -357,7 +462,8 @@ void SettingsScreen::onItemSelected(int index) {
                 case 2: _currentLevel = SETTINGS_NETWORK; break;
                 case 3: _currentLevel = SETTINGS_GPS; break;
                 case 4: _currentLevel = SETTINGS_POWER; break;
-                case 5: _currentLevel = SETTINGS_ABOUT; break;
+                case 5: _currentLevel = SETTINGS_AUDIO; break;
+                case 6: _currentLevel = SETTINGS_ABOUT; break;
             }
             buildMenu();
             configureSoftKeys();
@@ -395,13 +501,10 @@ void SettingsScreen::onItemSelected(int index) {
         }
 
         case SETTINGS_POWER: {
-            // Toggle power saving settings
+            // Toggle sleep settings
             DeviceSettings& device = SettingsManager::getDeviceSettings();
             switch (index) {
-                case 0:  // Power Saving Enable
-                    device.powerSavingEnabled = !device.powerSavingEnabled;
-                    break;
-                case 1:  // Sleep After (cycle through values: 1, 2, 5, 10 minutes)
+                case 0:  // Sleep After (cycle through values: 1, 2, 5, 10 minutes)
                     if (device.sleepTimeoutSecs <= 60) {
                         device.sleepTimeoutSecs = 120;    // 2 min
                     } else if (device.sleepTimeoutSecs <= 120) {
@@ -412,11 +515,62 @@ void SettingsScreen::onItemSelected(int index) {
                         device.sleepTimeoutSecs = 60;     // Back to 1 min
                     }
                     break;
-                case 2:  // Wake on LoRa
+                case 1:  // Wake on LoRa (uses light sleep)
                     device.wakeOnLoRa = !device.wakeOnLoRa;
                     break;
-                case 3:  // Wake on Button
+                case 2:  // Wake on Button
                     device.wakeOnButton = !device.wakeOnButton;
+                    break;
+                case 3:  // Deep Sleep Mode
+                    device.useDeepSleep = !device.useDeepSleep;
+                    // If deep sleep enabled, disable LoRa wake (not supported)
+                    if (device.useDeepSleep) {
+                        device.wakeOnLoRa = false;
+                    }
+                    break;
+            }
+            SettingsManager::saveDeviceSettings();
+            buildMenu();
+            requestRedraw();
+            break;
+        }
+
+        case SETTINGS_AUDIO: {
+            // Toggle audio settings
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+            switch (index) {
+                case 0:  // Volume (cycle: 0, 20, 40, 60, 80, 100)
+                    device.audioVolume = (device.audioVolume + 20) % 120;
+                    if (device.audioVolume > 100) device.audioVolume = 0;
+                    Audio::setVolume(device.audioVolume);
+                    break;
+                case 1:  // Mute All
+                    device.audioMuted = !device.audioMuted;
+                    if (device.audioMuted) {
+                        Audio::mute();
+                    } else {
+                        Audio::unmute();
+                    }
+                    break;
+                case 2:  // Message Tone
+                    device.toneMessage = cycleAlertTone(device.toneMessage);
+                    Audio::playAlertTone(device.toneMessage);  // Preview
+                    break;
+                case 3:  // Connect Tone
+                    device.toneNodeConnect = cycleAlertTone(device.toneNodeConnect);
+                    Audio::playAlertTone(device.toneNodeConnect);  // Preview
+                    break;
+                case 4:  // Low Battery Tone
+                    device.toneLowBattery = cycleAlertTone(device.toneLowBattery);
+                    Audio::playAlertTone(device.toneLowBattery);  // Preview
+                    break;
+                case 5:  // Sent Tone
+                    device.toneSent = cycleAlertTone(device.toneSent);
+                    Audio::playAlertTone(device.toneSent);  // Preview
+                    break;
+                case 6:  // Error Tone
+                    device.toneError = cycleAlertTone(device.toneError);
+                    Audio::playAlertTone(device.toneError);  // Preview
                     break;
             }
             SettingsManager::saveDeviceSettings();

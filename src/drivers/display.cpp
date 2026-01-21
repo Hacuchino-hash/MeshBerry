@@ -26,6 +26,7 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
+#include "../ui/Emoji.h"
 
 // T-Deck pins (from LilyGo official)
 #define BOARD_POWERON   10
@@ -231,7 +232,92 @@ void drawBitmapBg(int16_t x, int16_t y, const uint8_t* bitmap, int16_t w, int16_
 
 void drawRGB565(int16_t x, int16_t y, const uint16_t* bitmap, int16_t w, int16_t h) {
     if (!displayInitialized || !display || !bitmap) return;
-    display->drawRGBBitmap(x, y, bitmap, w, h);
+
+    int pixels = w * h;
+
+    if (pixels <= 144) {
+        // Small image (emoji size) - use stack buffer for efficiency
+        uint16_t buffer[144];
+        memcpy_P(buffer, bitmap, pixels * sizeof(uint16_t));
+        display->drawRGBBitmap(x, y, buffer, w, h);
+    } else {
+        // Large image - draw row by row to avoid stack overflow
+        // Use a row buffer (max screen width is 320)
+        uint16_t rowBuffer[320];
+        int rowPixels = (w < 320) ? w : 320;
+
+        for (int row = 0; row < h; row++) {
+            memcpy_P(rowBuffer, bitmap + (row * w), rowPixels * sizeof(uint16_t));
+            display->drawRGBBitmap(x, y + row, rowBuffer, rowPixels, 1);
+        }
+    }
+}
+
+// =============================================================================
+// EMOJI-AWARE TEXT RENDERING
+// =============================================================================
+
+void drawTextWithEmoji(int16_t x, int16_t y, const char* text, uint16_t color, uint8_t size) {
+    if (!displayInitialized || !display || !text) return;
+
+    int16_t cursorX = x;
+    int16_t charWidth = 6 * size;
+    int16_t charHeight = 8 * size;
+    const char* p = text;
+
+    while (*p) {
+        uint32_t codepoint;
+        int bytes = Emoji::decodeUTF8(p, &codepoint);
+
+        if (bytes == 0) {
+            // Invalid byte, skip it
+            p++;
+            continue;
+        }
+
+        if (bytes == 1) {
+            // ASCII character - render normally
+            char c[2] = { (char)codepoint, '\0' };
+            display->setTextColor(color);
+            display->setTextSize(size);
+            display->setCursor(cursorX, y);
+            display->print(c);
+            cursorX += charWidth;
+            p++;
+        } else {
+            // Multi-byte UTF-8 character - check if it's an emoji
+            const EmojiEntry* emoji = Emoji::findByCodepoint(codepoint);
+            if (emoji && emoji->bitmap) {
+                // Draw emoji bitmap (12x12 RGB565)
+                // Center vertically relative to text
+                int16_t emojiY = y;
+                if (charHeight > EMOJI_HEIGHT) {
+                    emojiY += (charHeight - EMOJI_HEIGHT) / 2;
+                }
+                // Use our PROGMEM-safe function
+                drawRGB565(cursorX, emojiY, emoji->bitmap, EMOJI_WIDTH, EMOJI_HEIGHT);
+                cursorX += EMOJI_WIDTH;
+            } else {
+                // Unknown Unicode character - render placeholder [?]
+                display->setTextColor(color);
+                display->setTextSize(size);
+                display->setCursor(cursorX, y);
+                display->print("[?]");
+                cursorX += 3 * charWidth;
+            }
+            p += bytes;
+        }
+    }
+}
+
+void drawTextWithEmojiCentered(int16_t x, int16_t y, int16_t w, const char* text, uint16_t color, uint8_t size) {
+    if (!displayInitialized || !display || !text) return;
+
+    // Calculate width using emoji-aware function
+    int16_t textWidth = Emoji::textWidth(text, size);
+    int16_t centeredX = x + (w - textWidth) / 2;
+
+    drawTextWithEmoji(centeredX, y, text, color, size);
 }
 
 void* getDisplayPtr() {

@@ -230,8 +230,9 @@ public:
      * @param channelIdx Index of the channel (0-7)
      * @param senderAndText Message text in format "SenderName: message"
      * @param timestamp Unix timestamp of the message
+     * @param hops Number of hops the message traveled (0 = direct/unknown)
      */
-    typedef void (*ChannelMessageCallback)(int channelIdx, const char* senderAndText, uint32_t timestamp);
+    typedef void (*ChannelMessageCallback)(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops);
 
     /**
      * Set channel message callback
@@ -257,6 +258,12 @@ public:
      * Check if forwarding is enabled
      */
     bool isForwardingEnabled() const { return _forwardingEnabled; }
+
+    /**
+     * Check if there is pending work (outbound packets queued)
+     * Used by power management to determine if safe to sleep
+     */
+    bool hasPendingWork() const;
 
     // =========================================================================
     // REPEATER MANAGEMENT
@@ -300,6 +307,34 @@ public:
      */
     void setDMCallback(DMCallback cb) { _dmCallback = cb; }
 
+    /**
+     * Callback type for DM delivery status update
+     * @param contactId Recipient node ID
+     * @param ack_crc ACK hash for matching to specific message
+     * @param delivered True if ACK received, false if timed out
+     * @param attempts Number of send attempts made
+     */
+    typedef void (*DeliveryCallback)(uint32_t contactId, uint32_t ack_crc,
+                                      bool delivered, uint8_t attempts);
+
+    /**
+     * Set delivery status callback
+     */
+    void setDeliveryCallback(DeliveryCallback cb) { _deliveryCallback = cb; }
+
+    /**
+     * Callback type for channel message repeat heard
+     * @param channelIdx Channel index
+     * @param contentHash Hash of message content (for matching)
+     * @param repeatCount How many times heard retransmitted
+     */
+    typedef void (*RepeatCallback)(int channelIdx, uint32_t contentHash, uint8_t repeatCount);
+
+    /**
+     * Set channel repeat callback
+     */
+    void setRepeatCallback(RepeatCallback cb) { _repeatCallback = cb; }
+
     // =========================================================================
     // DIRECT MESSAGING
     // =========================================================================
@@ -308,9 +343,10 @@ public:
      * Send a direct message to a contact
      * @param contactId Node ID of the recipient
      * @param text Message text
+     * @param out_ack_crc Optional output for ACK CRC (for tracking delivery)
      * @return true if packet was queued for send
      */
-    bool sendDirectMessage(uint32_t contactId, const char* text);
+    bool sendDirectMessage(uint32_t contactId, const char* text, uint32_t* out_ack_crc = nullptr);
 
     /**
      * Send login request to a repeater
@@ -353,6 +389,9 @@ protected:
     void onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id,
                       uint32_t timestamp, const uint8_t* app_data, size_t app_data_len) override;
 
+    // Override to detect our own repeated messages BEFORE duplicate filter
+    bool filterRecvFloodPacket(mesh::Packet* packet) override;
+
     void onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
                         const mesh::Identity& sender, uint8_t* data, size_t len) override;
 
@@ -393,6 +432,8 @@ private:
     CLIResponseCallback _cliCallback;
     ChannelMessageCallback _channelMsgCallback;
     DMCallback _dmCallback;
+    DeliveryCallback _deliveryCallback;
+    RepeatCallback _repeatCallback;
 
     // DM peer tracking (for decrypting incoming DMs)
     struct DMPeer {
@@ -415,6 +456,33 @@ private:
     static const int MAX_DM_PEERS = 8;
     DMPeer _dmPeers[MAX_DM_PEERS];
     int _lastMatchedDMPeer;  // Index of last matched DM peer (-1 if none/repeater)
+
+    // Pending DM tracking for delivery status
+    struct PendingDM {
+        uint32_t ack_crc;           // Expected ACK hash
+        uint32_t contactId;         // Recipient
+        uint32_t sentAt;            // millis() when sent
+        uint32_t timeout;           // Timeout deadline (millis)
+        uint8_t payload[260];       // Stored payload for retry
+        size_t payloadLen;          // Payload length
+        uint8_t attempts;           // Send attempts
+        bool isFlood;               // True if last send was flood
+        bool active;                // Slot in use
+    };
+    static const int MAX_PENDING_DMS = 4;
+    PendingDM _pendingDMs[MAX_PENDING_DMS];
+
+    // Channel message repeat tracking
+    struct ChannelMsgStats {
+        uint32_t contentHash;       // Hash of message content (channel + text)
+        uint32_t sentAt;            // millis() when sent (for expiry)
+        int channelIdx;             // Which channel
+        uint8_t repeatCount;        // Times heard retransmitted
+        bool active;
+    };
+    static const int MAX_CHANNEL_STATS = 8;
+    static const uint32_t CHANNEL_STATS_EXPIRY_MS = 60000;  // 60 seconds expiry
+    ChannelMsgStats _channelStats[MAX_CHANNEL_STATS];
 
     // Forwarding state
     bool _forwardingEnabled;
@@ -466,6 +534,16 @@ private:
      * @param contactId Node ID to clear path for
      */
     void invalidatePath(uint32_t contactId);
+
+    // Pending DM management
+    int findFreePendingSlot();
+    void retryDMWithFlood(int pendingIdx);
+    void checkPendingTimeouts();
+
+    // Channel repeat tracking
+    void trackSentChannelMessage(int channelIdx, const char* text);
+    void checkChannelRepeat(int channelIdx, const char* text, const char* senderName);
+    uint32_t hashChannelMessage(int channelIdx, const char* text);
 };
 
 #endif // MESHBERRY_MESH_H

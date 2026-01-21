@@ -19,12 +19,12 @@ struct MenuItemConfig {
 };
 
 // Note: Channels moved to Messages screen (channels are group chats)
+// Note: Repeaters removed - ContactsScreen now has separate sections
 static const MenuItemConfig menuItems[HOME_ITEM_COUNT] = {
     { "Messages",  Icons::MSG_ICON,       ScreenId::MESSAGES },
     { "Contacts",  Icons::CONTACTS_ICON,  ScreenId::CONTACTS },
     { "Settings",  Icons::SETTINGS_ICON,  ScreenId::SETTINGS },
     { "Status",    Icons::INFO_ICON,      ScreenId::STATUS },
-    { "Repeaters", Icons::REPEATER_ICON,  ScreenId::CONTACTS },  // Filter to repeaters
     { "GPS",       Icons::GPS_ICON,       ScreenId::GPS },
     { "About",     Icons::INFO_ICON,      ScreenId::ABOUT }
 };
@@ -168,18 +168,22 @@ bool HomeScreen::handleInput(const InputData& input) {
             break;
 
         case InputEvent::TRACKBALL_CLICK:
-        case InputEvent::KEY_PRESS:
-            if (input.event == InputEvent::TRACKBALL_CLICK ||
-                input.keyChar == '\n' || input.keyCode == KEY_ENTER) {
-                // Open selected item
+        case InputEvent::SOFTKEY_CENTER:
+            // Open selected item (trackball click or Enter key)
+            {
                 ScreenId target = getScreenForItem(_selectedItem);
+                Serial.printf("[HOME] Open item %d -> screen %d\n",
+                              (int)_selectedItem, (int)target);
                 if (target != ScreenId::NONE) {
                     Screens.navigateTo(target);
                     return true;
                 }
             }
+            break;
+
+        case InputEvent::KEY_PRESS:
             // Handle shortcut keys
-            if (input.event == InputEvent::KEY_PRESS) {
+            {
                 char c = input.keyChar;
                 if (c == 'm' || c == 'M') {
                     Screens.navigateTo(ScreenId::MESSAGES);
@@ -197,6 +201,53 @@ bool HomeScreen::handleInput(const InputData& input) {
         case InputEvent::BACK:
             // Can't go back from home
             return false;
+
+        case InputEvent::TOUCH_TAP:
+            // Map touch coordinates to grid tile
+            {
+                int16_t tx = input.touchX;
+                int16_t ty = input.touchY;
+
+                // Ignore touches in soft key bar area (no back from home)
+                if (ty >= Theme::SOFTKEY_BAR_Y) {
+                    return true;
+                }
+
+                // Check if touch is in grid area
+                if (ty >= GRID_START_Y && ty < GRID_START_Y + ROWS * (TILE_HEIGHT + TILE_MARGIN)) {
+                    // Calculate which row
+                    int touchRow = (ty - GRID_START_Y) / (TILE_HEIGHT + TILE_MARGIN);
+                    if (touchRow >= ROWS) touchRow = ROWS - 1;
+
+                    // Calculate which column
+                    int touchCol = -1;
+                    for (int c = 0; c < COLS; c++) {
+                        int16_t colX = GRID_START_X + c * (TILE_WIDTH + TILE_MARGIN);
+                        if (tx >= colX && tx < colX + TILE_WIDTH) {
+                            touchCol = c;
+                            break;
+                        }
+                    }
+
+                    if (touchCol >= 0) {
+                        int touchIndex = getIndex(touchRow, touchCol);
+                        if (touchIndex >= 0 && touchIndex < HOME_ITEM_COUNT) {
+                            // Select and open the touched item
+                            _selectedItem = (HomeMenuItem)touchIndex;
+                            requestRedraw();
+
+                            ScreenId target = getScreenForItem(_selectedItem);
+                            Serial.printf("[HOME] Touch tap at (%d,%d) -> item %d -> screen %d\n",
+                                          tx, ty, touchIndex, (int)target);
+                            if (target != ScreenId::NONE) {
+                                Screens.navigateTo(target);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;  // Consume touch event even if not on a tile
 
         default:
             return false;

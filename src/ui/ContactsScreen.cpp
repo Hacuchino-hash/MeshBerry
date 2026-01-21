@@ -31,7 +31,7 @@ void ContactsScreen::onEnter() {
 }
 
 void ContactsScreen::configureSoftKeys() {
-    SoftKeyBar::setLabels("Filter", "View", "Back");
+    SoftKeyBar::setLabels("Fav", "View", "Back");
 }
 
 void ContactsScreen::formatTimeAgo(uint32_t timestamp, char* buf, size_t bufSize) {
@@ -54,61 +54,158 @@ void ContactsScreen::formatTimeAgo(uint32_t timestamp, char* buf, size_t bufSize
     }
 }
 
+void ContactsScreen::addRepeaterToList(const ContactEntry* c, int originalIdx) {
+    strncpy(_primaryStrings[_contactCount], c->name, sizeof(_primaryStrings[0]) - 1);
+    _primaryStrings[_contactCount][sizeof(_primaryStrings[0]) - 1] = '\0';
+
+    char timeStr[16];
+    formatTimeAgo(c->lastHeard, timeStr, sizeof(timeStr));
+
+    snprintf(_secondaryStrings[_contactCount], sizeof(_secondaryStrings[0]) - 1,
+             "%ddBm | %s", c->lastRssi, timeStr);
+    _secondaryStrings[_contactCount][sizeof(_secondaryStrings[0]) - 1] = '\0';
+
+    _contactItems[_contactCount] = {
+        _primaryStrings[_contactCount],
+        _secondaryStrings[_contactCount],
+        Icons::REPEATER_ICON,
+        Theme::GREEN,
+        c->isFavorite,
+        Theme::YELLOW,
+        (void*)(intptr_t)originalIdx
+    };
+    _contactCount++;
+}
+
+void ContactsScreen::addContactToList(const ContactEntry* c, int originalIdx) {
+    strncpy(_primaryStrings[_contactCount], c->name, sizeof(_primaryStrings[0]) - 1);
+    _primaryStrings[_contactCount][sizeof(_primaryStrings[0]) - 1] = '\0';
+
+    const char* typeStr = "Chat";
+    uint16_t typeColor = Theme::WHITE;
+    const uint8_t* icon = Icons::CONTACTS_ICON;
+
+    switch (c->type) {
+        case NODE_TYPE_ROOM:
+            typeStr = "Room";
+            typeColor = Theme::YELLOW;
+            break;
+        case NODE_TYPE_SENSOR:
+            typeStr = "Sensor";
+            typeColor = Theme::ACCENT;
+            break;
+        default:
+            break;
+    }
+
+    char timeStr[16];
+    formatTimeAgo(c->lastHeard, timeStr, sizeof(timeStr));
+
+    snprintf(_secondaryStrings[_contactCount], sizeof(_secondaryStrings[0]) - 1,
+             "%s | %ddBm | %s", typeStr, c->lastRssi, timeStr);
+    _secondaryStrings[_contactCount][sizeof(_secondaryStrings[0]) - 1] = '\0';
+
+    _contactItems[_contactCount] = {
+        _primaryStrings[_contactCount],
+        _secondaryStrings[_contactCount],
+        icon,
+        typeColor,
+        c->isFavorite,
+        Theme::YELLOW,
+        (void*)(intptr_t)originalIdx
+    };
+    _contactCount++;
+}
+
 void ContactsScreen::buildContactList() {
     ContactSettings& contacts = SettingsManager::getContactSettings();
     _contactCount = 0;
+    _repeaterCount = 0;
+    _regularContactCount = 0;
+    _repeaterHeaderIdx = -1;
+    _contactsHeaderIdx = -1;
 
-    for (int i = 0; i < contacts.numContacts && _contactCount < MAX_CONTACTS; i++) {
+    // First pass: count each type
+    for (int i = 0; i < contacts.numContacts; i++) {
         const ContactEntry* c = contacts.getContact(i);
-        if (!c) continue;
-
-        // Copy name
-        strncpy(_primaryStrings[_contactCount], c->name, 23);
-        _primaryStrings[_contactCount][23] = '\0';
-
-        // Build secondary string with type and signal
-        const char* typeStr = "Node";
-        uint16_t typeColor = Theme::WHITE;
-        const uint8_t* icon = Icons::CONTACTS_ICON;
-
-        switch (c->type) {
-            case NODE_TYPE_REPEATER:
-                typeStr = "Repeater";
-                typeColor = Theme::GREEN;
-                icon = Icons::REPEATER_ICON;
-                break;
-            case NODE_TYPE_ROOM:
-                typeStr = "Room";
-                typeColor = Theme::YELLOW;
-                break;
-            case NODE_TYPE_SENSOR:
-                typeStr = "Sensor";
-                typeColor = Theme::ACCENT;
-                break;
-            default:
-                typeStr = "Chat";
-                break;
+        if (!c || !c->isActive) continue;
+        if (c->type == NODE_TYPE_REPEATER) {
+            _repeaterCount++;
+        } else {
+            _regularContactCount++;
         }
+    }
 
-        char timeStr[16];
-        formatTimeAgo(c->lastHeard, timeStr, sizeof(timeStr));
-
-        snprintf(_secondaryStrings[_contactCount], 31, "%s | %ddBm | %s",
-                 typeStr, c->lastRssi, timeStr);
-        _secondaryStrings[_contactCount][31] = '\0';
-
-        // Build list item
+    // Add "Contacts" section header if we have any (clients first)
+    if (_regularContactCount > 0) {
+        _contactsHeaderIdx = _contactCount;
+        snprintf(_primaryStrings[_contactCount], sizeof(_primaryStrings[0]),
+                 "-- Contacts (%d) --", _regularContactCount);
+        _secondaryStrings[_contactCount][0] = '\0';
         _contactItems[_contactCount] = {
             _primaryStrings[_contactCount],
-            _secondaryStrings[_contactCount],
-            icon,
-            typeColor,
-            c->isFavorite,
-            Theme::YELLOW,
-            (void*)(intptr_t)i  // Store original index
+            nullptr,
+            nullptr,
+            Theme::GRAY_LIGHT,
+            false,
+            0,
+            (void*)(intptr_t)-1
         };
-
         _contactCount++;
+
+        // Add favorite contacts first
+        for (int i = 0; i < contacts.numContacts && _contactCount < MAX_CONTACTS; i++) {
+            const ContactEntry* c = contacts.getContact(i);
+            if (!c || !c->isActive) continue;
+            if (c->type == NODE_TYPE_REPEATER) continue;
+            if (!c->isFavorite) continue;  // Favorites first
+            addContactToList(c, i);
+        }
+
+        // Add non-favorite contacts
+        for (int i = 0; i < contacts.numContacts && _contactCount < MAX_CONTACTS; i++) {
+            const ContactEntry* c = contacts.getContact(i);
+            if (!c || !c->isActive) continue;
+            if (c->type == NODE_TYPE_REPEATER) continue;
+            if (c->isFavorite) continue;  // Skip favorites (already added)
+            addContactToList(c, i);
+        }
+    }
+
+    // Add "Repeaters" section header if we have any (below contacts)
+    if (_repeaterCount > 0) {
+        _repeaterHeaderIdx = _contactCount;
+        snprintf(_primaryStrings[_contactCount], sizeof(_primaryStrings[0]),
+                 "-- Repeaters (%d) --", _repeaterCount);
+        _secondaryStrings[_contactCount][0] = '\0';
+        _contactItems[_contactCount] = {
+            _primaryStrings[_contactCount],
+            nullptr,
+            nullptr,
+            Theme::GRAY_LIGHT,
+            false,
+            0,
+            (void*)(intptr_t)-1
+        };
+        _contactCount++;
+
+        // Add favorite repeaters first
+        for (int i = 0; i < contacts.numContacts && _contactCount < MAX_CONTACTS; i++) {
+            const ContactEntry* c = contacts.getContact(i);
+            if (!c || !c->isActive) continue;
+            if (c->type != NODE_TYPE_REPEATER) continue;
+            if (!c->isFavorite) continue;  // Favorites first
+            addRepeaterToList(c, i);
+        }
+
+        // Add non-favorite repeaters
+        for (int i = 0; i < contacts.numContacts && _contactCount < MAX_CONTACTS; i++) {
+            const ContactEntry* c = contacts.getContact(i);
+            if (!c || !c->isActive) continue;
+            if (c->type != NODE_TYPE_REPEATER) continue;
+            if (c->isFavorite) continue;  // Skip favorites (already added)
+            addRepeaterToList(c, i);
+        }
     }
 
     _listView.setItems(_contactItems, _contactCount);
@@ -145,10 +242,19 @@ void ContactsScreen::draw(bool fullRedraw) {
 }
 
 bool ContactsScreen::handleInput(const InputData& input) {
-    // Left soft key: "Filter" - cycle through filter modes
+    // Left soft key: "Fav" - toggle favorite on selected contact
     if (input.event == InputEvent::SOFTKEY_LEFT) {
-        // TODO: Implement filter (All / Repeaters / Chat nodes / Favorites)
-        Screens.showStatus("Filter coming soon", 2000);
+        if (_contactCount > 0) {
+            int idx = _listView.getSelectedIndex();
+            int originalIdx = (int)(intptr_t)_contactItems[idx].userData;
+            if (originalIdx >= 0) {  // Not a header
+                ContactSettings& contacts = SettingsManager::getContactSettings();
+                contacts.toggleFavorite(originalIdx);
+                SettingsManager::saveContacts();
+                buildContactList();  // Rebuild to re-sort
+                requestRedraw();
+            }
+        }
         return true;
     }
 
@@ -173,12 +279,69 @@ bool ContactsScreen::handleInput(const InputData& input) {
     }
 
     // Let list view handle up/down
-    if (_listView.handleTrackball(
-            input.event == InputEvent::TRACKBALL_UP,
-            input.event == InputEvent::TRACKBALL_DOWN,
-            false, false,
-            false)) {
+    bool movingUp = (input.event == InputEvent::TRACKBALL_UP);
+    bool movingDown = (input.event == InputEvent::TRACKBALL_DOWN);
+    if (_listView.handleTrackball(movingUp, movingDown, false, false, false)) {
+        // Skip section headers when navigating
+        int idx = _listView.getSelectedIndex();
+        int userData = (int)(intptr_t)_contactItems[idx].userData;
+        if (userData == -1) {
+            // On a header, move to next valid item
+            if (movingDown && idx + 1 < _contactCount) {
+                _listView.setSelectedIndex(idx + 1);
+            } else if (movingUp && idx > 0) {
+                _listView.setSelectedIndex(idx - 1);
+            }
+        }
         requestRedraw();
+        return true;
+    }
+
+    // Handle touch tap
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                Screens.goBack();
+            } else if (tx >= 107) {
+                // Center soft key = View
+                if (_contactCount > 0) {
+                    onContactSelected(_listView.getSelectedIndex());
+                }
+            } else {
+                // Left soft key = Fav toggle
+                if (_contactCount > 0) {
+                    int idx = _listView.getSelectedIndex();
+                    int originalIdx = (int)(intptr_t)_contactItems[idx].userData;
+                    if (originalIdx >= 0) {
+                        ContactSettings& contacts = SettingsManager::getContactSettings();
+                        contacts.toggleFavorite(originalIdx);
+                        SettingsManager::saveContacts();
+                        buildContactList();
+                        requestRedraw();
+                    }
+                }
+            }
+            return true;
+        }
+
+        // List touch - select and open contact
+        int16_t listTop = Theme::CONTENT_Y + 30;
+        if (ty >= listTop && _contactCount > 0) {
+            int itemIndex = _listView.getScrollOffset() + (ty - listTop) / 44;
+            if (itemIndex >= 0 && itemIndex < _contactCount) {
+                // Skip headers - don't select or open them
+                int userData = (int)(intptr_t)_contactItems[itemIndex].userData;
+                if (userData != -1) {
+                    _listView.setSelectedIndex(itemIndex);
+                    onContactSelected(itemIndex);  // Open directly on tap
+                }
+            }
+        }
         return true;
     }
 
@@ -190,6 +353,9 @@ void ContactsScreen::onContactSelected(int index) {
 
     // Get the original contact index from stored data
     int originalIdx = (int)(intptr_t)_contactItems[index].userData;
+
+    // Skip section headers (marked with -1)
+    if (originalIdx == -1) return;
 
     ContactSettings& contacts = SettingsManager::getContactSettings();
     const ContactEntry* contact = contacts.getContact(originalIdx);

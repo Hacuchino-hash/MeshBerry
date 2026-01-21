@@ -149,6 +149,29 @@ void RepeaterCLIScreen::drawInputLine() {
 }
 
 bool RepeaterCLIScreen::handleInput(const InputData& input) {
+    // Handle touch tap for soft keys
+    if (input.event == InputEvent::TOUCH_TAP) {
+        int16_t ty = input.touchY;
+        int16_t tx = input.touchX;
+
+        // Soft key bar touch (Y >= 210)
+        if (ty >= Theme::SOFTKEY_BAR_Y) {
+            if (tx >= 214) {
+                // Right soft key = Back
+                Screens.goBack();
+            } else if (tx >= 107) {
+                // Center soft key = Send
+                sendCommand();
+            } else {
+                // Left soft key = Clear
+                clearInput();
+                requestRedraw();
+            }
+            return true;
+        }
+        return true;
+    }
+
     switch (input.event) {
         case InputEvent::KEY_PRESS:
             if (input.keyChar >= 32 && input.keyChar < 127) {

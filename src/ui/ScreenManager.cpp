@@ -175,10 +175,16 @@ void ScreenManager::handleKey(uint8_t keyCode, char keyChar) {
         SoftKeyBar::setHighlight(SoftKeyBar::KEY_RIGHT, true);
     } else if (keyCode == KEY_ENTER) {
         // Center soft key: Select/Open (Enter key only)
-        // NOTE: Space is NOT mapped here - it should pass through as regular key
-        // so screens with text input (ChatScreen, etc.) can use it for typing
         input.event = InputEvent::SOFTKEY_CENTER;
         SoftKeyBar::setHighlight(SoftKeyBar::KEY_CENTER, true);
+    } else if (keyCode == KEY_SPACE) {
+        // Space key: Trackball click equivalent
+        // WORKAROUND: GPIO 0 (trackball click) is stuck LOW on T-Deck hardware,
+        // so Space serves as the click action for navigation screens.
+        // Text input screens (ChatScreen, etc.) handle TRACKBALL_CLICK specially
+        // to insert a space character instead of treating it as selection.
+        input.event = InputEvent::TRACKBALL_CLICK;
+        Serial.println("[UI] Space -> TRACKBALL_CLICK");
     } else if (keyChar == 'q' || keyChar == 'Q' || keyChar == '$') {
         // Left soft key: Action (Q key or Sym+4)
         input.event = InputEvent::SOFTKEY_LEFT;
@@ -207,6 +213,8 @@ void ScreenManager::handleTrackball(bool up, bool down, bool left, bool right, b
         input.event = InputEvent::TRACKBALL_RIGHT;
     } else if (click) {
         input.event = InputEvent::TRACKBALL_CLICK;
+        Serial.printf("[UI] Trackball click received, routing to screen %d\n",
+                      _currentScreen ? (int)_currentScreen->getId() : -1);
     } else {
         return;  // No event
     }

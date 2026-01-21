@@ -16,6 +16,17 @@
 #include "../config.h"
 
 // =============================================================================
+// DM DELIVERY STATUS
+// =============================================================================
+
+enum DMDeliveryStatus : uint8_t {
+    DM_STATUS_SENDING = 0,    // Packet queued/sent, waiting for ACK
+    DM_STATUS_SENT = 1,       // Packet transmitted (legacy - for backwards compat)
+    DM_STATUS_DELIVERED = 2,  // ACK received from recipient
+    DM_STATUS_FAILED = 3      // Timeout, no ACK after retries
+};
+
+// =============================================================================
 // DM MESSAGE
 // =============================================================================
 
@@ -23,13 +34,17 @@ struct DMMessage {
     uint32_t timestamp;
     char text[MAX_MESSAGE_LENGTH];
     bool isOutgoing;
-    bool delivered;
+    bool delivered;              // Legacy field - use status instead for outgoing
+    DMDeliveryStatus status;     // Delivery status for outgoing messages
+    uint32_t ack_crc;            // ACK hash for matching delivery callback
 
     void clear() {
         timestamp = 0;
         text[0] = '\0';
         isOutgoing = false;
         delivered = false;
+        status = DM_STATUS_SENDING;
+        ack_crc = 0;
     }
 };
 
@@ -61,7 +76,8 @@ struct DMConversation {
     }
 
     // Add a message to this conversation (circular buffer)
-    void addMessage(const char* text, bool outgoing, uint32_t timestamp) {
+    // For outgoing messages, pass ack_crc to track delivery status
+    void addMessage(const char* text, bool outgoing, uint32_t timestamp, uint32_t ack_crc = 0) {
         if (!text) return;
 
         // Add to circular buffer
@@ -70,7 +86,15 @@ struct DMConversation {
         strncpy(messages[idx].text, text, MAX_MESSAGE_LENGTH - 1);
         messages[idx].text[MAX_MESSAGE_LENGTH - 1] = '\0';
         messages[idx].isOutgoing = outgoing;
-        messages[idx].delivered = outgoing;  // Outgoing are "delivered" immediately
+        messages[idx].delivered = !outgoing;  // Incoming are delivered, outgoing need ACK
+        messages[idx].ack_crc = ack_crc;
+
+        // Set initial status
+        if (outgoing) {
+            messages[idx].status = DM_STATUS_SENDING;
+        } else {
+            messages[idx].status = DM_STATUS_DELIVERED;  // Incoming = delivered to us
+        }
 
         // Advance head
         messageHead = (messageHead + 1) % MAX_MESSAGES_PER_CONV;
@@ -93,6 +117,27 @@ struct DMConversation {
         int start = (messageHead - messageCount + MAX_MESSAGES_PER_CONV) % MAX_MESSAGES_PER_CONV;
         int actualIdx = (start + index) % MAX_MESSAGES_PER_CONV;
         return &messages[actualIdx];
+    }
+
+    // Get mutable message by index (for updating delivery status)
+    DMMessage* getMessageMutable(int index) {
+        if (index < 0 || index >= messageCount) return nullptr;
+        int start = (messageHead - messageCount + MAX_MESSAGES_PER_CONV) % MAX_MESSAGES_PER_CONV;
+        int actualIdx = (start + index) % MAX_MESSAGES_PER_CONV;
+        return &messages[actualIdx];
+    }
+
+    // Update delivery status by ACK CRC
+    bool updateDeliveryStatus(uint32_t ack_crc, DMDeliveryStatus newStatus) {
+        for (int i = 0; i < messageCount; i++) {
+            DMMessage* msg = getMessageMutable(i);
+            if (msg && msg->isOutgoing && msg->ack_crc == ack_crc) {
+                msg->status = newStatus;
+                msg->delivered = (newStatus == DM_STATUS_DELIVERED);
+                return true;
+            }
+        }
+        return false;
     }
 
     // Mark all as read
@@ -171,10 +216,10 @@ struct DMSettings {
     }
 
     // Add message to a contact's conversation
-    void addMessage(uint32_t contactId, const char* text, bool outgoing, uint32_t timestamp) {
+    void addMessage(uint32_t contactId, const char* text, bool outgoing, uint32_t timestamp, uint32_t ack_crc = 0) {
         int idx = getOrCreateConversation(contactId);
         if (idx >= 0) {
-            conversations[idx].addMessage(text, outgoing, timestamp);
+            conversations[idx].addMessage(text, outgoing, timestamp, ack_crc);
         }
     }
 

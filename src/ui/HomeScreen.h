@@ -16,16 +16,16 @@
 /**
  * Home screen menu items
  * Note: Channels moved to Messages screen (channels are group chats)
+ * Note: Repeaters removed - ContactsScreen now has separate sections
  */
 enum HomeMenuItem {
     HOME_MESSAGES = 0,
     HOME_CONTACTS,
     HOME_SETTINGS,
     HOME_STATUS,
-    HOME_REPEATERS,
     HOME_GPS,
     HOME_ABOUT,
-    HOME_ITEM_COUNT  // Now 7 items
+    HOME_ITEM_COUNT  // Now 6 items (3x2 grid)
 };
 
 /**
@@ -65,23 +65,23 @@ private:
     // Get screen ID for menu item
     ScreenId getScreenForItem(HomeMenuItem item) const;
 
-    // Grid navigation
-    int getRow(int index) const { return index / 4; }
-    int getCol(int index) const { return index % 4; }
-    int getIndex(int row, int col) const { return row * 4 + col; }
+    // Grid navigation (3x2 grid)
+    int getRow(int index) const { return index / 3; }
+    int getCol(int index) const { return index % 3; }
+    int getIndex(int row, int col) const { return row * 3 + col; }
 
     // State
     HomeMenuItem _selectedItem = HOME_MESSAGES;
     HomeMenuItem _prevSelectedItem = HOME_MESSAGES;  // Track for partial redraws
     uint8_t _badges[HOME_ITEM_COUNT] = { 0 };
 
-    // Layout
-    static constexpr int COLS = 4;
+    // Layout (3x2 grid with wider tiles)
+    static constexpr int COLS = 3;
     static constexpr int ROWS = 2;
-    static constexpr int16_t TILE_WIDTH = 76;
+    static constexpr int16_t TILE_WIDTH = 100;
     static constexpr int16_t TILE_HEIGHT = 85;
-    static constexpr int16_t TILE_MARGIN = 4;
-    static constexpr int16_t GRID_START_X = 6;
+    static constexpr int16_t TILE_MARGIN = 5;
+    static constexpr int16_t GRID_START_X = 5;
     static constexpr int16_t GRID_START_Y = Theme::CONTENT_Y + 5;
 };
 

@@ -79,6 +79,33 @@ int ContactSettings::addOrUpdateContact(const NodeInfo& node) {
 }
 
 int ContactSettings::addOrUpdateContact(const NodeInfo& node, const uint8_t* pubKey) {
+    // First, try to find existing contact by pubKey (most reliable for repeaters)
+    // This prevents duplicates when the same device sends adverts with varying IDs
+    int existingIdx = -1;
+    if (pubKey != nullptr) {
+        existingIdx = findContactByPubKey(pubKey);
+        if (existingIdx >= 0) {
+            // Found by pubKey - update existing contact and fix ID if different
+            ContactEntry& contact = contacts[existingIdx];
+            if (contact.id != node.id) {
+                Serial.printf("[CONTACT] Fixing ID mismatch for %s: was %08X, now %08X\n",
+                              contact.name, contact.id, node.id);
+                contact.id = node.id;  // Update to latest ID
+            }
+            // Update contact info
+            strncpy(contact.name, node.name, sizeof(contact.name) - 1);
+            contact.name[sizeof(contact.name) - 1] = '\0';
+            contact.type = node.type;
+            contact.lastRssi = node.rssi;
+            contact.lastSnr = node.snr;
+            contact.lastHeard = node.lastHeard;
+            Serial.printf("[CONTACT] Updated existing contact by pubKey: %s (idx=%d)\n",
+                          contact.name, existingIdx);
+            return existingIdx;
+        }
+    }
+
+    // Not found by pubKey, use normal ID-based lookup
     int idx = addOrUpdateContact(node);
     if (idx >= 0 && pubKey != nullptr) {
         // Debug: log incoming pubKey
@@ -147,6 +174,28 @@ bool ContactSettings::removeContact(int idx) {
 int ContactSettings::findContact(uint32_t id) const {
     for (int i = 0; i < numContacts; i++) {
         if (contacts[i].isActive && contacts[i].id == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int ContactSettings::findContactByPubKey(const uint8_t* pubKey) const {
+    if (!pubKey) return -1;
+
+    // Check if pubKey is all zeros (invalid)
+    bool hasValidKey = false;
+    for (int i = 0; i < 32; i++) {
+        if (pubKey[i] != 0) {
+            hasValidKey = true;
+            break;
+        }
+    }
+    if (!hasValidKey) return -1;
+
+    // Search for matching public key
+    for (int i = 0; i < numContacts; i++) {
+        if (contacts[i].isActive && memcmp(contacts[i].pubKey, pubKey, 32) == 0) {
             return i;
         }
     }

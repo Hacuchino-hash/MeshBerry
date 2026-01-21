@@ -24,6 +24,7 @@ enum SettingsLevel {
     SETTINGS_NETWORK,
     SETTINGS_GPS,
     SETTINGS_POWER,
+    SETTINGS_AUDIO,
     SETTINGS_ABOUT
 };
 

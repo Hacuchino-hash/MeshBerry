@@ -43,14 +43,33 @@ public:
      * @param text Message text
      * @param timestamp Unix timestamp
      * @param isOutgoing True if sent by us
+     * @param hops Hop count for incoming messages (0 = unknown)
      */
-    void addMessage(const char* sender, const char* text, uint32_t timestamp, bool isOutgoing);
+    void addMessage(const char* sender, const char* text, uint32_t timestamp, bool isOutgoing, uint8_t hops = 0);
 
     /**
      * Static helper to add message to the currently viewed chat
      * Safe to call even if not on ChatScreen
+     * @param channelIdx Channel index
+     * @param senderAndText Combined "Sender: text" string
+     * @param timestamp Message timestamp
+     * @param hops Hop count (0 = unknown)
      */
-    static void addToCurrentChat(int channelIdx, const char* senderAndText, uint32_t timestamp);
+    static void addToCurrentChat(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops = 0);
+
+    /**
+     * Update repeat count for a message (called when our message is heard repeated)
+     * @param channelIdx Channel index
+     * @param contentHash Hash of the message content
+     * @param repeatCount Number of times heard repeated
+     */
+    static void updateRepeatCount(int channelIdx, uint32_t contentHash, uint8_t repeatCount);
+
+    /**
+     * Parse "SenderName: message" format (public for callback use)
+     */
+    static void parseSenderAndText(const char* combined, char* sender, size_t senderLen,
+                                   char* text, size_t textLen);
 
 private:
     int _channelIdx = 0;
@@ -62,6 +81,9 @@ private:
         char sender[16];
         char text[128];
         uint32_t timestamp;
+        uint32_t contentHash;    // For matching repeat callbacks (outgoing only)
+        uint8_t repeatCount;     // Times heard repeated (outgoing only)
+        uint8_t hops;            // Hop count (incoming only, 0 = unknown)
         bool isOutgoing;
     };
     ChatMessage _messages[MAX_CHAT_MESSAGES];
@@ -82,9 +104,8 @@ private:
     void sendMessage();
     void clearInput();
 
-    // Parse "SenderName: message" format
-    static void parseSenderAndText(const char* combined, char* sender, size_t senderLen,
-                                   char* text, size_t textLen);
+    // Compute content hash for repeat tracking
+    static uint32_t hashMessage(int channelIdx, const char* text);
 
     // Singleton instance pointer for static callback
     static ChatScreen* _instance;
