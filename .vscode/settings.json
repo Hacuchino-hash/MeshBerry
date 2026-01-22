@@ -1,0 +1,57 @@
+{
+    // Terminal configuration to include PlatformIO in PATH
+    "terminal.integrated.env.windows": {
+        "PATH": "${env:HOME}\\.platformio\\penv\\Scripts;${env:PATH}"
+    },
+
+    // C/C++ IntelliSense configuration
+    "C_Cpp.default.configurationProvider": "ms-vscode.cpptools",
+    "C_Cpp.default.compilerPath": "${userHome}/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-g++.exe",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/src/**",
+        "${workspaceFolder}/include/**",
+        "${workspaceFolder}/lib/**",
+        "${workspaceFolder}/.pio/libdeps/tdeck/**",
+        "${userHome}/.platformio/packages/framework-arduinoespressif32/cores/esp32",
+        "${userHome}/.platformio/packages/framework-arduinoespressif32/libraries/**"
+    ],
+    "C_Cpp.default.defines": [
+        "ARDUINO_USB_CDC_ON_BOOT=1",
+        "ARDUINO_USB_MODE=1",
+        "BOARD_HAS_PSRAM",
+        "LILYGO_TDECK",
+        "ESP32",
+        "ESP_PLATFORM"
+    ],
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.cppStandard": "c++17",
+
+    // File associations
+    "files.associations": {
+        "*.h": "cpp",
+        "*.cpp": "cpp",
+        "*.ino": "cpp"
+    },
+
+    // Files to exclude from explorer
+    "files.exclude": {
+        "**/.git": true,
+        "**/.pio": true,
+        "**/__pycache__": true
+    },
+
+    // Editor settings for consistency with project
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "editor.rulers": [80, 120],
+
+    // Trim trailing whitespace on save
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+
+    // PlatformIO specific settings
+    "platformio-ide.autoRebuildAutocompleteIndex": true,
+    "platformio-ide.useBuiltinPIOCore": false,
+    "platformio-ide.customPATH": "${userHome}/.platformio/penv/Scripts"
+}

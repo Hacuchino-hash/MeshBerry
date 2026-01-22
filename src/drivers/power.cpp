@@ -11,8 +11,11 @@
 #include "power.h"
 #include "display.h"
 #include "keyboard.h"
+#include "config.h"  // For PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ
+#include <Wire.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <esp_task_wdt.h>
 
 // Forward declaration for mesh pending work check
 class MeshBerryMesh;
@@ -249,7 +252,17 @@ void updatePowerState(uint32_t screenTimeoutSecs, uint32_t sleepTimeoutSecs,
 // =============================================================================
 
 static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool wakeOnLoRa) {
+    const uint32_t MAX_SLEEP_DURATION = 24 * 3600;  // 24 hours maximum
+
     while (currentState == STATE_SLEEPING) {
+        // Check if we've exceeded maximum sleep duration
+        if (totalSleptSecs >= MAX_SLEEP_DURATION) {
+            Serial.printf("[POWER] Max sleep duration reached (%u hours) - forcing wake\n",
+                          MAX_SLEEP_DURATION / 3600);
+            currentState = STATE_AWAKE;
+            break;
+        }
+
         // Preflight check before each sleep cycle
         if (!doPreflightSleep()) {
             Serial.println("[POWER] Preflight failed - exiting sleep");
@@ -311,9 +324,6 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 
         // No activity - accumulate sleep time and continue
         totalSleptSecs += sleepIntervalSecs;
-
-        // Optional: max sleep time limit (e.g., 24 hours)
-        // For now, keep sleeping until user activity
     }
 }
 
@@ -322,6 +332,28 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 // =============================================================================
 
 void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
+    // Disable watchdog before sleep to prevent timeout during sleep cycles
+    esp_task_wdt_delete(NULL);
+
+    // Shutdown peripherals before sleep to save power (~20-50mA → ~2-5mA)
+    Serial.println("[POWER] Shutting down peripherals for sleep");
+    Keyboard::setBacklight(false);   // Turn off keyboard backlight (~5mA)
+    Display::backlightOff();         // Turn off display backlight (~10-15mA)
+
+    // Suspend I2C bus (keyboard, touchscreen) - saves ~5-10mA
+    Wire.end();
+    Serial.flush();  // Ensure all serial output is sent before sleep
+    delay(10);  // Give peripherals time to settle
+
+    // CRITICAL: Reset strapping pins BEFORE sleep to prevent corruption
+    // GPIO 0 (trackball click) and GPIO 1 (trackball left) are ESP32-S3 strapping pins
+    // If they're held LOW during reset, device enters DOWNLOAD mode → boot loop
+    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
+    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
+    pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
+    pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
+    delay(10);  // Stabilization time for GPIO state
+
     // Enable GPIO wakeup system
     esp_sleep_enable_gpio_wakeup();
 
@@ -349,17 +381,32 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     // Get wake cause for logging
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     if (cause == ESP_SLEEP_WAKEUP_GPIO) {
-        // Small delay to let radio/interrupt stabilize
-        delay(10);
+        // Longer delay to let radio/interrupt stabilize after GPIO wake
+        delay(50);
+    } else {
+        delay(10);  // Brief delay for other wake sources
     }
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    // Reset strapping pin GPIOs after wake (they may get corrupted)
+    // Reset strapping pin GPIOs after wake (defensive redundancy)
+    // Already reset before sleep, but reset again after wake for extra safety
     gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
     gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
     pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
     pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
+
+    // Restore peripherals after wake
+    Serial.println("[POWER] Restoring peripherals after wake");
+    delay(50);  // Stabilization time for peripherals
+    Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);  // Restart I2C bus
+    Keyboard::init();                    // Re-initialize keyboard
+    Display::backlightOn();              // Turn on display backlight
+    Keyboard::setBacklight(true);        // Turn on keyboard backlight
+
+    // Re-add task to watchdog and reset it after wake
+    esp_task_wdt_add(NULL);
+    esp_task_wdt_reset();
 }
 
 } // namespace Power

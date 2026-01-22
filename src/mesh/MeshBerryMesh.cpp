@@ -391,6 +391,18 @@ void MeshBerryMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id,
     }
 
     if (hasPubKey) {
+        // DEBUG: Show Identity hash calculation for this advertisement
+        mesh::Identity tempIdentity(pubKeyCopy);
+        uint8_t identityHash[8];
+        tempIdentity.copyHashTo(identityHash);
+
+        Serial.printf("[MESH] Advertisement Identity hash: %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                      identityHash[0], identityHash[1], identityHash[2], identityHash[3],
+                      identityHash[4], identityHash[5], identityHash[6], identityHash[7]);
+        Serial.printf("[MESH] Advertisement pubKey[0..7]:  %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                      pubKeyCopy[0], pubKeyCopy[1], pubKeyCopy[2], pubKeyCopy[3],
+                      pubKeyCopy[4], pubKeyCopy[5], pubKeyCopy[6], pubKeyCopy[7]);
+
         ContactSettings& contacts = SettingsManager::getContactSettings();
         int idx = contacts.addOrUpdateContact(node, pubKeyCopy);
         SettingsManager::saveContacts();
@@ -1003,6 +1015,34 @@ int MeshBerryMesh::searchPeersByHash(const uint8_t* hash) {
     }
 
     Serial.println("[MESH] searchPeersByHash: no match");
+
+    // NEW: Try to auto-create DM peer from contacts if hash matches
+    Serial.printf("[MESH] No DM peers matched hash %02X%02X%02X%02X - searching contacts\n",
+                  hash[0], hash[1], hash[2], hash[3]);
+
+    ContactSettings& contacts = SettingsManager::getContactSettings();
+    for (int i = 0; i < contacts.numContacts && i < ContactSettings::MAX_CONTACTS; i++) {
+        const ContactEntry* c = contacts.getContact(i);
+        if (!c) continue;
+
+        // Check if this contact's pubKey hash matches
+        mesh::Identity contactIdentity(c->pubKey);
+        if (contactIdentity.isHashMatch(hash)) {
+            Serial.printf("[MESH] Found matching contact: %s (id=%08X)\n", c->name, c->id);
+
+            // Auto-create DM peer for this contact
+            int slot = findOrCreateDMPeer(c->id);
+            if (slot >= 0) {
+                Serial.printf("[MESH] Auto-created DM peer in slot %d\n", slot);
+                _lastMatchedDMPeer = slot;  // Remember which peer we just created
+                return 1;  // Found one matching peer
+            } else {
+                Serial.printf("[MESH] Failed to create DM peer for %s\n", c->name);
+            }
+        }
+    }
+
+    Serial.println("[MESH] No matching contact found in database");
     return 0;
 }
 
@@ -1321,7 +1361,13 @@ int MeshBerryMesh::findOrCreateDMPeer(uint32_t contactId) {
         if (c->pubKey[i] != 0) { hasValidKey = true; break; }
     }
     if (!hasValidKey) {
-        Serial.printf("[DM] Contact %s has no valid public key\n", c->name);
+        Serial.printf("[DM] ERROR: Contact %s (id=%08X) has no valid public key\n", c->name, contactId);
+        Serial.print("[DM]   pubKey: ");
+        for (int i = 0; i < 32; i++) {
+            Serial.printf("%02X", c->pubKey[i]);
+            if (i == 15) Serial.print("\n[DM]            ");
+        }
+        Serial.println();
         return -1;
     }
 
