@@ -201,7 +201,7 @@ void TDeckBoard::setPeripheralPower(bool enabled) {
 
     if (enabled) {
         // Give peripherals time to power up
-        // T-Deck needs longer delay for display controller to stabilize
-        delay(100);
+        // ESP32-C3 keyboard controller needs extra time to boot and init I2C slave
+        delay(250);
     }
 }
