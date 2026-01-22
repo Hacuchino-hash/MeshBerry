@@ -40,7 +40,47 @@ constexpr uint16_t RED_DARK     = 0xA000;  // Darker red
 constexpr uint16_t YELLOW       = 0xFE60;  // Warning, notification
 constexpr uint16_t ORANGE       = 0xFC00;  // Caution
 
-// Semantic aliases
+// =============================================================================
+// EXTENDED COLOR PALETTE (Modern UI)
+// =============================================================================
+
+// Primary color variations
+constexpr uint16_t COLOR_PRIMARY        = BLUE;        // Main accent (keep backward compat)
+constexpr uint16_t COLOR_PRIMARY_LIGHT  = 0x4DBF;      // Lighter blue for highlights
+constexpr uint16_t COLOR_PRIMARY_DARK   = 0x1A7F;      // Darker blue for pressed states
+
+// Secondary accent (orange for visual balance)
+constexpr uint16_t COLOR_SECONDARY       = 0xFD20;     // Orange accent
+constexpr uint16_t COLOR_SECONDARY_LIGHT = 0xFE60;     // Light orange
+
+// Background hierarchy (refined grays)
+constexpr uint16_t COLOR_BG_PRIMARY   = BLACK;         // Main background
+constexpr uint16_t COLOR_BG_CARD      = 0x18C3;        // Dark gray cards
+constexpr uint16_t COLOR_BG_ELEVATED  = 0x2945;        // Elevated surfaces (modals, etc.)
+constexpr uint16_t COLOR_BG_INPUT     = 0x2104;        // Input field backgrounds
+
+// Text hierarchy
+constexpr uint16_t COLOR_TEXT_PRIMARY   = WHITE;       // High emphasis text
+constexpr uint16_t COLOR_TEXT_SECONDARY = 0xC618;      // Medium emphasis (light gray)
+constexpr uint16_t COLOR_TEXT_DISABLED  = GRAY_LIGHT;  // Low emphasis (gray)
+constexpr uint16_t COLOR_TEXT_HINT      = 0x4208;      // Dim gray for hints/placeholders
+
+// Semantic colors (extended)
+// Note: Use existing COLOR_ERROR and COLOR_WARNING macros from config.h
+constexpr uint16_t COLOR_SUCCESS = GREEN;
+constexpr uint16_t COLOR_INFO    = BLUE;
+
+// UI element colors
+constexpr uint16_t COLOR_DIVIDER = GRAY_MID;           // Subtle dividers
+constexpr uint16_t COLOR_BORDER  = 0x6B4D;             // Visible borders
+constexpr uint16_t COLOR_SHADOW  = 0x2104;             // Drop shadow base
+constexpr uint16_t COLOR_FOCUS   = COLOR_PRIMARY;      // Focus ring
+
+// Message bubble colors
+constexpr uint16_t COLOR_BUBBLE_OUTGOING = 0x2B9F;     // Blue (your messages)
+constexpr uint16_t COLOR_BUBBLE_INCOMING = 0x2945;     // Gray (their messages)
+
+// Semantic aliases (backward compatibility)
 constexpr uint16_t BG_PRIMARY   = BLACK;
 constexpr uint16_t BG_SECONDARY = GRAY_DARKEST;
 constexpr uint16_t BG_CARD      = GRAY_DARK;
@@ -112,6 +152,39 @@ constexpr int16_t INPUT_RADIUS      = 4;
 constexpr int16_t RADIUS_SMALL      = 2;
 constexpr int16_t RADIUS_MEDIUM     = 4;
 constexpr int16_t RADIUS_LARGE      = 8;
+
+// =============================================================================
+// MODERN UI COMPONENT CONSTANTS
+// =============================================================================
+
+// Card styling
+constexpr int16_t CARD_RADIUS        = 12;    // Rounded corners for cards
+constexpr int16_t CARD_PADDING       = 12;    // Internal padding
+constexpr int16_t CARD_MARGIN        = 8;     // Gap between cards
+constexpr int16_t CARD_SHADOW_OFFSET = 4;     // Shadow offset in pixels
+
+// Button styling (modern)
+constexpr int16_t BTN_RADIUS      = 8;        // Rounded button corners
+constexpr int16_t BTN_HEIGHT      = 40;       // Standard button height
+constexpr int16_t BTN_PADDING_H   = 16;       // Horizontal padding
+constexpr int16_t BTN_PADDING_V   = 10;       // Vertical padding
+
+// Input field styling (modern)
+constexpr int16_t INPUT_RADIUS_NEW = 6;       // Input corner radius
+constexpr int16_t INPUT_HEIGHT_NEW = 36;      // Input field height
+constexpr int16_t INPUT_PADDING_NEW = 10;     // Text padding inside input
+
+// Icon sizes (multi-size system)
+constexpr int16_t ICON_SMALL  = 16;           // Small icons (current)
+constexpr int16_t ICON_MEDIUM = 24;           // Medium icons (NEW)
+constexpr int16_t ICON_LARGE  = 32;           // Large icons (NEW - home screen)
+
+// Spacing scale (standardized)
+constexpr int16_t SPACE_XS = 4;
+constexpr int16_t SPACE_SM = 8;
+constexpr int16_t SPACE_MD = 12;
+constexpr int16_t SPACE_LG = 16;
+constexpr int16_t SPACE_XL = 24;
 
 // =============================================================================
 // FONT SIZES

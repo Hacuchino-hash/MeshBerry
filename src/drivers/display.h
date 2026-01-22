@@ -202,6 +202,113 @@ void drawTextWithEmojiCentered(int16_t x, int16_t y, int16_t w, const char* text
  */
 void* getDisplayPtr();
 
+// =============================================================================
+// MODERN UI HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Button rendering states
+ */
+enum ButtonState {
+    BTN_NORMAL = 0,
+    BTN_HOVER,
+    BTN_PRESSED,
+    BTN_DISABLED
+};
+
+/**
+ * Draw a card with optional shadow (modern card-based UI)
+ * @param x X position
+ * @param y Y position
+ * @param w Width
+ * @param h Height
+ * @param bgColor Background color (default: Theme::COLOR_BG_CARD)
+ * @param radius Corner radius (default: Theme::CARD_RADIUS)
+ * @param shadow Draw shadow underneath (default: false)
+ */
+void drawCard(int16_t x, int16_t y, int16_t w, int16_t h,
+              uint16_t bgColor, int16_t radius = 12, bool shadow = false);
+
+/**
+ * Draw a vertical gradient fill (dithered for RGB565)
+ * @param x X position
+ * @param y Y position
+ * @param w Width
+ * @param h Height
+ * @param colorTop Top color
+ * @param colorBottom Bottom color
+ */
+void fillGradient(int16_t x, int16_t y, int16_t w, int16_t h,
+                  uint16_t colorTop, uint16_t colorBottom);
+
+/**
+ * Draw a drop shadow (soft blur simulation)
+ * @param x X position of element
+ * @param y Y position of element
+ * @param w Width of element
+ * @param h Height of element
+ * @param offset Shadow offset in pixels (default: 4)
+ * @param opacity Shadow opacity 0-100 (default: 40)
+ */
+void drawShadow(int16_t x, int16_t y, int16_t w, int16_t h,
+                int16_t offset = 4, uint8_t opacity = 40);
+
+/**
+ * Draw a styled button with state-based appearance
+ * @param x X position
+ * @param y Y position
+ * @param w Width
+ * @param h Height
+ * @param label Button label text
+ * @param state Button state (normal, hover, pressed, disabled)
+ * @param isPrimary Primary button style (filled) vs secondary (outline)
+ */
+void drawButton(int16_t x, int16_t y, int16_t w, int16_t h,
+                const char* label, ButtonState state = BTN_NORMAL,
+                bool isPrimary = false);
+
+/**
+ * Draw a toggle switch (ON/OFF indicator)
+ * @param x X position (left edge)
+ * @param y Y position (top edge)
+ * @param isOn Toggle state (on = true, off = false)
+ * @param isEnabled Enabled state (default: true)
+ */
+void drawToggle(int16_t x, int16_t y, bool isOn, bool isEnabled = true);
+
+/**
+ * Draw a progress bar
+ * @param x X position
+ * @param y Y position
+ * @param w Width
+ * @param h Height
+ * @param progress Progress value 0.0-1.0
+ * @param color Progress bar color (default: Theme::COLOR_PRIMARY)
+ */
+void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h,
+                     float progress, uint16_t color);
+
+/**
+ * Draw a notification badge (circular count indicator)
+ * @param x X position (center)
+ * @param y Y position (center)
+ * @param count Number to display (1-99, 99+ shows "99+")
+ * @param bgColor Badge background color (default: Theme::COLOR_ERROR)
+ */
+void drawBadge(int16_t x, int16_t y, int count, uint16_t bgColor);
+
+/**
+ * Draw an icon button (icon centered in circular background)
+ * @param x X position (center)
+ * @param y Y position (center)
+ * @param radius Circle radius
+ * @param icon Pointer to icon bitmap (16x16)
+ * @param bgColor Background color
+ * @param iconColor Icon foreground color
+ */
+void drawIconButton(int16_t x, int16_t y, int16_t radius,
+                    const uint8_t* icon, uint16_t bgColor, uint16_t iconColor);
+
 } // namespace Display
 
 #endif // MESHBERRY_DISPLAY_H

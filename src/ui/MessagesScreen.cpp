@@ -144,30 +144,108 @@ void MessagesScreen::draw(bool fullRedraw) {
                           Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT,
                           Theme::BG_PRIMARY);
 
-        // Draw title
-        Display::drawText(12, Theme::CONTENT_Y + 4, "Messages", Theme::ACCENT, 2);
+        // Modern title card with gradient
+        const int16_t titleCardH = 28;
+        Display::drawCard(4, Theme::CONTENT_Y + 2, Theme::SCREEN_WIDTH - 8, titleCardH,
+                         Theme::COLOR_BG_ELEVATED, Theme::CARD_RADIUS, false);
+        Display::fillGradient(4, Theme::CONTENT_Y + 2, Theme::SCREEN_WIDTH - 8, titleCardH,
+                             Theme::COLOR_PRIMARY_DARK, Theme::COLOR_BG_ELEVATED);
+        Display::drawText(12, Theme::CONTENT_Y + 8, "Messages", Theme::WHITE, 2);
 
-        // Unread count badge
+        // Unread count badge (modern style)
         int totalUnread = getUnreadCount();
         if (totalUnread > 0) {
-            char badge[8];
-            snprintf(badge, sizeof(badge), "%d", totalUnread);
-            int16_t badgeW = strlen(badge) * 6 + 8;
-            int16_t badgeX = Theme::SCREEN_WIDTH - badgeW - 8;
-            Display::fillRoundRect(badgeX, Theme::CONTENT_Y + 4, badgeW, 16, 4, Theme::RED);
-            Display::drawText(badgeX + 4, Theme::CONTENT_Y + 8, badge, Theme::WHITE, 1);
+            int16_t badgeX = Theme::SCREEN_WIDTH - 24;
+            int16_t badgeY = Theme::CONTENT_Y + 10;
+            Display::drawBadge(badgeX, badgeY, totalUnread, COLOR_ERROR);
         }
-
-        // Divider below title
-        Display::drawHLine(12, Theme::CONTENT_Y + 26, Theme::SCREEN_WIDTH - 24, Theme::DIVIDER);
     }
+
+    // Adjust list bounds below title
+    _listView.setBounds(0, Theme::CONTENT_Y + 32, Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT - 32);
 
     if (_conversationCount == 0) {
         Display::drawTextCentered(0, Theme::CONTENT_Y + 80,
                                   Theme::SCREEN_WIDTH,
-                                  "No channels", Theme::TEXT_SECONDARY, 1);
+                                  "No channels", Theme::COLOR_TEXT_SECONDARY, 1);
     } else {
-        _listView.draw(fullRedraw);
+        // Draw items manually with card styling
+        int16_t startIdx = _listView.getScrollOffset();
+        int16_t listHeight = Theme::CONTENT_HEIGHT - 32;  // Height below title
+        int16_t visibleCount = (listHeight / 60) + 1;  // 60px per item
+
+        for (int i = 0; i < visibleCount && (startIdx + i) < _conversationCount; i++) {
+            int idx = startIdx + i;
+            bool selected = (idx == _listView.getSelectedIndex());
+            drawConversationItem(idx, i, selected);
+        }
+    }
+}
+
+void MessagesScreen::drawConversationItem(int idx, int visibleIdx, bool selected) {
+    Conversation& conv = _conversations[idx];
+
+    // Calculate position (60px item height, 32px offset for title)
+    int16_t y = Theme::CONTENT_Y + 32 + (visibleIdx * 60);
+    int16_t x = 4;
+    int16_t w = Theme::SCREEN_WIDTH - 8;
+    int16_t h = 56;
+
+    // Draw card background
+    uint16_t bgColor = selected ? Theme::COLOR_BG_ELEVATED : Theme::COLOR_BG_CARD;
+    Display::drawCard(x, y, w, h, bgColor, Theme::CARD_RADIUS, false);
+
+    if (selected) {
+        Display::drawRoundRect(x, y, w, h, Theme::CARD_RADIUS, Theme::COLOR_PRIMARY);
+    }
+
+    // Icon (channel hash # or management icon for last item)
+    int16_t iconX = x + 10;
+    int16_t iconY = y + 12;
+    uint16_t iconColor = selected ? Theme::COLOR_PRIMARY : Theme::COLOR_TEXT_SECONDARY;
+
+    // Use gear icon for "Manage Channels" item, channel icon for channels
+    const uint8_t* icon = (conv.channelIdx == -1) ? Icons::SETTINGS_ICON : Icons::CHANNEL_ICON;
+    Display::drawBitmap(iconX, iconY, icon, 16, 16, iconColor);
+
+    // Channel name
+    int16_t nameX = iconX + 20;
+    int16_t nameY = y + 8;
+    Display::drawText(nameX, nameY, conv.name, Theme::COLOR_TEXT_PRIMARY, 1);
+
+    // Time ago (right-aligned) - only for channels, not management item
+    if (conv.channelIdx != -1 && conv.lastTimestamp > 0) {
+        char timeStr[16];
+        uint32_t age = (millis() / 1000) - conv.lastTimestamp;
+        if (age < 60) {
+            snprintf(timeStr, 16, "%ds", (int)age);
+        } else if (age < 3600) {
+            snprintf(timeStr, 16, "%dm", (int)(age / 60));
+        } else if (age < 86400) {
+            snprintf(timeStr, 16, "%dh", (int)(age / 3600));
+        } else {
+            snprintf(timeStr, 16, "%dd", (int)(age / 86400));
+        }
+        int16_t timeX = x + w - 30;
+        Display::drawText(timeX, nameY, timeStr, Theme::COLOR_TEXT_HINT, 1);
+    }
+
+    // Preview text (truncated) - only for channels
+    if (conv.channelIdx != -1 && conv.lastMessage[0] != '\0') {
+        int16_t previewY = y + 24;
+        const char* preview = Theme::truncateText(conv.lastMessage, w - 40, 1);
+        Display::drawText(nameX, previewY, preview, Theme::COLOR_TEXT_SECONDARY, 1);
+    } else if (conv.channelIdx == -1) {
+        // For management item, show description
+        int16_t previewY = y + 24;
+        Display::drawText(nameX, previewY, "Configure channels", Theme::COLOR_TEXT_SECONDARY, 1);
+    }
+
+    // Unread badge (if any) - only for channels
+    if (conv.channelIdx != -1 && conv.unreadCount > 0) {
+        int16_t badgeX = x + w - 16;
+        int16_t badgeY = y + h - 16;
+        Display::drawBadge(badgeX, badgeY, conv.unreadCount, COLOR_ERROR);
     }
 }
 

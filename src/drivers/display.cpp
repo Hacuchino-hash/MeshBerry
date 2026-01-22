@@ -27,6 +27,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include "../ui/Emoji.h"
+#include "../ui/Theme.h"
 
 // T-Deck pins (from LilyGo official)
 #define BOARD_POWERON   10
@@ -322,6 +323,208 @@ void drawTextWithEmojiCentered(int16_t x, int16_t y, int16_t w, const char* text
 
 void* getDisplayPtr() {
     return display;
+}
+
+// =============================================================================
+// MODERN UI HELPER FUNCTIONS IMPLEMENTATION
+// =============================================================================
+
+void drawCard(int16_t x, int16_t y, int16_t w, int16_t h,
+              uint16_t bgColor, int16_t radius, bool shadow) {
+    if (!displayInitialized || !display) return;
+
+    // Draw shadow if requested
+    if (shadow) {
+        drawShadow(x, y, w, h, 4, 40);
+    }
+
+    // Draw card background
+    display->fillRoundRect(x, y, w, h, radius, bgColor);
+}
+
+void fillGradient(int16_t x, int16_t y, int16_t w, int16_t h,
+                  uint16_t colorTop, uint16_t colorBottom) {
+    if (!displayInitialized || !display) return;
+
+    // Simple dithered gradient - draw horizontal lines with interpolated colors
+    for (int16_t row = 0; row < h; row++) {
+        // Interpolate color (simple linear blend)
+        float ratio = (float)row / (float)h;
+
+        // Extract RGB components (RGB565 format)
+        uint8_t r1 = (colorTop >> 11) & 0x1F;
+        uint8_t g1 = (colorTop >> 5) & 0x3F;
+        uint8_t b1 = colorTop & 0x1F;
+
+        uint8_t r2 = (colorBottom >> 11) & 0x1F;
+        uint8_t g2 = (colorBottom >> 5) & 0x3F;
+        uint8_t b2 = colorBottom & 0x1F;
+
+        // Blend
+        uint8_t r = r1 + (r2 - r1) * ratio;
+        uint8_t g = g1 + (g2 - g1) * ratio;
+        uint8_t b = b1 + (b2 - b1) * ratio;
+
+        // Reconstruct RGB565
+        uint16_t color = (r << 11) | (g << 5) | b;
+
+        // Draw line
+        display->drawFastHLine(x, y + row, w, color);
+    }
+}
+
+void drawShadow(int16_t x, int16_t y, int16_t w, int16_t h,
+                int16_t offset, uint8_t opacity) {
+    if (!displayInitialized || !display) return;
+
+    // Simple shadow - multiple offset rectangles with decreasing opacity
+    // For RGB565, we'll use progressively lighter gray
+
+    // Calculate shadow gray levels based on opacity
+    uint8_t baseGray = (opacity * 255) / 100 / 5;  // Divided by 5 for 5 layers
+
+    for (int i = offset; i > 0; i--) {
+        uint8_t grayLevel = baseGray * i;
+        uint16_t shadowColor = (grayLevel >> 3) << 11 | (grayLevel >> 2) << 5 | (grayLevel >> 3);
+
+        // Draw shadow rect offset
+        display->drawRect(x + offset - i + 1, y + offset - i + 1,
+                         w + i, h + i, shadowColor);
+    }
+}
+
+void drawButton(int16_t x, int16_t y, int16_t w, int16_t h,
+                const char* label, ButtonState state, bool isPrimary) {
+    if (!displayInitialized || !display) return;
+
+    uint16_t bgColor, borderColor, textColor;
+
+    if (state == BTN_DISABLED) {
+        bgColor = Theme::COLOR_BG_CARD;
+        borderColor = Theme::COLOR_DIVIDER;
+        textColor = Theme::COLOR_TEXT_DISABLED;
+    } else if (isPrimary) {
+        if (state == BTN_PRESSED) {
+            bgColor = Theme::COLOR_PRIMARY_DARK;
+        } else if (state == BTN_HOVER) {
+            bgColor = Theme::COLOR_PRIMARY_LIGHT;
+        } else {
+            bgColor = Theme::COLOR_PRIMARY;
+        }
+        borderColor = bgColor;
+        textColor = Theme::WHITE;
+    } else {
+        // Secondary button (outline)
+        bgColor = Theme::COLOR_BG_CARD;
+        if (state == BTN_PRESSED) {
+            borderColor = Theme::COLOR_PRIMARY_DARK;
+            textColor = Theme::COLOR_PRIMARY_DARK;
+        } else if (state == BTN_HOVER) {
+            borderColor = Theme::COLOR_PRIMARY_LIGHT;
+            textColor = Theme::COLOR_PRIMARY_LIGHT;
+        } else {
+            borderColor = Theme::COLOR_PRIMARY;
+            textColor = Theme::COLOR_PRIMARY;
+        }
+    }
+
+    // Draw button background
+    display->fillRoundRect(x, y, w, h, 8, bgColor);
+
+    // Draw border for secondary buttons
+    if (!isPrimary && state != BTN_DISABLED) {
+        display->drawRoundRect(x, y, w, h, 8, borderColor);
+    }
+
+    // Draw centered label
+    drawTextCentered(x, y + (h - 8) / 2, w, label, textColor, 1);
+}
+
+void drawToggle(int16_t x, int16_t y, bool isOn, bool isEnabled) {
+    if (!displayInitialized || !display) return;
+
+    // Toggle dimensions: 48x28 (standard iOS-like toggle)
+    const int16_t toggleW = 48;
+    const int16_t toggleH = 28;
+    const int16_t knobRadius = 12;
+    const int16_t knobY = y + toggleH / 2;
+
+    // Colors
+    uint16_t trackColor, knobColor;
+    if (!isEnabled) {
+        trackColor = Theme::GRAY_DARK;
+        knobColor = Theme::GRAY_MID;
+    } else if (isOn) {
+        trackColor = Theme::COLOR_PRIMARY;
+        knobColor = Theme::WHITE;
+    } else {
+        trackColor = Theme::GRAY_MID;
+        knobColor = Theme::WHITE;
+    }
+
+    // Draw track (rounded rect)
+    display->fillRoundRect(x, y, toggleW, toggleH, toggleH / 2, trackColor);
+
+    // Draw knob (circle)
+    int16_t knobX = isOn ? (x + toggleW - knobRadius - 2) : (x + knobRadius + 2);
+    display->fillCircle(knobX, knobY, knobRadius, knobColor);
+}
+
+void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h,
+                     float progress, uint16_t color) {
+    if (!displayInitialized || !display) return;
+
+    // Clamp progress
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    // Draw background
+    display->fillRoundRect(x, y, w, h, h / 2, Theme::COLOR_BG_INPUT);
+
+    // Draw progress fill
+    int16_t fillWidth = (int16_t)(w * progress);
+    if (fillWidth > 0) {
+        display->fillRoundRect(x, y, fillWidth, h, h / 2, color);
+    }
+}
+
+void drawBadge(int16_t x, int16_t y, int count, uint16_t bgColor) {
+    if (!displayInitialized || !display || count <= 0) return;
+
+    // Badge is a small circle with white text
+    const int16_t radius = 10;
+
+    // Draw circle
+    display->fillCircle(x, y, radius, bgColor);
+
+    // Draw count text
+    char countStr[4];
+    if (count > 99) {
+        strcpy(countStr, "99+");
+    } else {
+        snprintf(countStr, 4, "%d", count);
+    }
+
+    // Center text in circle
+    int16_t textW = strlen(countStr) * 6;  // 6px per char at size 1
+    int16_t textX = x - textW / 2;
+    int16_t textY = y - 4;  // 8px font height / 2
+
+    display->setTextSize(1);
+    display->setTextColor(Theme::WHITE);
+    display->setCursor(textX, textY);
+    display->print(countStr);
+}
+
+void drawIconButton(int16_t x, int16_t y, int16_t radius,
+                    const uint8_t* icon, uint16_t bgColor, uint16_t iconColor) {
+    if (!displayInitialized || !display || !icon) return;
+
+    // Draw circle background
+    display->fillCircle(x, y, radius, bgColor);
+
+    // Draw icon centered (assuming 16x16 icon)
+    drawBitmap(x - 8, y - 8, icon, 16, 16, iconColor);
 }
 
 } // namespace Display

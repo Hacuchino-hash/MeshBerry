@@ -76,49 +76,97 @@ void HomeScreen::drawTile(int index, bool selected) {
     int16_t x = GRID_START_X + col * (TILE_WIDTH + TILE_MARGIN);
     int16_t y = GRID_START_Y + row * (TILE_HEIGHT + TILE_MARGIN);
 
-    // Background with rounded corners
-    uint16_t bgColor = selected ? Theme::BLUE_DARK : Theme::BG_SECONDARY;
-    Display::fillRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_MEDIUM, bgColor);
-
-    // Selection border (BB-style blue highlight)
+    // Modern card background with gradient and shadow
+    uint16_t bgColorTop, bgColorBottom;
     if (selected) {
-        Display::drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_MEDIUM, Theme::BLUE);
-        Display::drawRoundRect(x + 1, y + 1, TILE_WIDTH - 2, TILE_HEIGHT - 2,
-                               Theme::RADIUS_MEDIUM - 1, Theme::BLUE_LIGHT);
+        // Selected: Blue gradient with shadow
+        bgColorTop = Theme::COLOR_PRIMARY_LIGHT;
+        bgColorBottom = Theme::COLOR_PRIMARY_DARK;
+        // Draw shadow first
+        Display::drawShadow(x, y, TILE_WIDTH, TILE_HEIGHT, 4, 50);
+    } else {
+        // Normal: Subtle gray gradient
+        bgColorTop = Theme::COLOR_BG_ELEVATED;
+        bgColorBottom = Theme::COLOR_BG_CARD;
+        // Subtle shadow
+        Display::drawShadow(x, y, TILE_WIDTH, TILE_HEIGHT, 2, 30);
     }
 
-    // Icon (centered horizontally, near top)
-    int16_t iconX = x + (TILE_WIDTH - 16) / 2;
-    int16_t iconY = y + 15;
-    uint16_t iconColor = selected ? Theme::WHITE : Theme::GRAY_LIGHTER;
-    Display::drawBitmap(iconX, iconY, item.icon, 16, 16, iconColor);
+    // Draw gradient background
+    Display::fillGradient(x, y, TILE_WIDTH, TILE_HEIGHT, bgColorTop, bgColorBottom);
 
-    // Label (centered below icon)
-    int16_t labelY = y + 45;
-    uint16_t textColor = selected ? Theme::WHITE : Theme::TEXT_SECONDARY;
+    // Draw card border
+    if (selected) {
+        Display::drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::CARD_RADIUS, Theme::COLOR_PRIMARY);
+    } else {
+        Display::drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::CARD_RADIUS, Theme::COLOR_BORDER);
+    }
+
+    // Icon (centered horizontally, larger and with background circle)
+    int16_t iconX = x + (TILE_WIDTH - 16) / 2;
+    int16_t iconY = y + 12;
+    uint16_t iconBgColor = selected ? Theme::COLOR_PRIMARY : Theme::COLOR_BG_INPUT;
+    uint16_t iconColor = selected ? Theme::WHITE : Theme::COLOR_PRIMARY_LIGHT;
+
+    // Draw icon with circular background (14px radius to fully cover 16x16 icon)
+    Display::fillCircle(iconX + 8, iconY + 8, 14, iconBgColor);
+    Display::drawBitmapBg(iconX, iconY, item.icon, 16, 16, iconColor, iconBgColor);
+
+    // Label (centered below icon, larger text)
+    int16_t labelY = y + 38;
+    uint16_t textColor = selected ? Theme::WHITE : Theme::COLOR_TEXT_PRIMARY;
 
     // Truncate label if needed
-    const char* label = Theme::truncateText(item.label, TILE_WIDTH - 8, Theme::FONT_SMALL);
-    Display::drawTextCentered(x, labelY, TILE_WIDTH, label, textColor, Theme::FONT_SMALL);
+    const char* label = Theme::truncateText(item.label, TILE_WIDTH - 8, Theme::FONT_MEDIUM);
+    Display::drawTextCentered(x, labelY, TILE_WIDTH, label, textColor, Theme::FONT_MEDIUM);
 
-    // Badge (if any)
+    // Status text (below label) - shows badge count or status
+    int16_t statusY = y + 55;
+    uint16_t statusColor = selected ? Theme::COLOR_TEXT_SECONDARY : Theme::COLOR_TEXT_HINT;
+
+    char statusText[16] = "";
     uint8_t badge = _badges[index];
     if (badge > 0) {
-        // Badge position: top-right of tile
-        int16_t badgeX = x + TILE_WIDTH - 14;
-        int16_t badgeY = y + 4;
-
-        // Badge background
-        Display::fillCircle(badgeX + 5, badgeY + 5, 7, Theme::RED);
-
-        // Badge text
-        char badgeStr[4];
-        if (badge > 9) {
-            strcpy(badgeStr, "9+");
+        if (badge > 99) {
+            snprintf(statusText, sizeof(statusText), "99+ new");
+        } else if (badge == 1) {
+            snprintf(statusText, sizeof(statusText), "1 new");
         } else {
-            snprintf(badgeStr, sizeof(badgeStr), "%d", badge);
+            snprintf(statusText, sizeof(statusText), "%d new", badge);
         }
-        Display::drawTextCentered(badgeX - 1, badgeY + 2, 12, badgeStr, Theme::WHITE, 1);
+    } else {
+        // Show helpful status text per tile
+        switch (index) {
+            case HOME_MESSAGES:
+                strcpy(statusText, "No msgs");
+                break;
+            case HOME_CONTACTS:
+                strcpy(statusText, "All nodes");
+                break;
+            case HOME_SETTINGS:
+                strcpy(statusText, "Configure");
+                break;
+            case HOME_STATUS:
+                strcpy(statusText, "System");
+                break;
+            case HOME_GPS:
+                strcpy(statusText, "Location");
+                break;
+            case HOME_ABOUT:
+                strcpy(statusText, "Info");
+                break;
+        }
+    }
+
+    Display::drawTextCentered(x, statusY, TILE_WIDTH, statusText, statusColor, Theme::FONT_SMALL);
+
+    // Badge indicator (small dot in corner if there are notifications)
+    if (badge > 0) {
+        int16_t dotX = x + TILE_WIDTH - 8;
+        int16_t dotY = y + 8;
+        Display::fillCircle(dotX, dotY, 4, COLOR_ERROR);  // Use macro from config.h
+        // Add white outline for visibility
+        Display::drawCircle(dotX, dotY, 4, Theme::WHITE);
     }
 }
 

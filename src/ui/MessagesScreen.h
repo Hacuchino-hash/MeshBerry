@@ -56,6 +56,9 @@ private:
     // Handle conversation selection
     void onConversationSelected(int index);
 
+    // Draw a single conversation item with modern card styling
+    void drawConversationItem(int idx, int visibleIdx, bool selected);
+
     // List view
     ListView _listView;
 

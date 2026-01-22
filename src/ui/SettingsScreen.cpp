@@ -243,15 +243,24 @@ void SettingsScreen::draw(bool fullRedraw) {
                           Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT,
                           Theme::BG_PRIMARY);
 
-        // Draw title
-        Display::drawText(12, Theme::CONTENT_Y + 4, getTitle(), Theme::ACCENT, 2);
+        // Modern title area with card background
+        const int16_t titleCardH = 28;
+        Display::drawCard(4, Theme::CONTENT_Y + 2, Theme::SCREEN_WIDTH - 8, titleCardH,
+                         Theme::COLOR_BG_ELEVATED, Theme::CARD_RADIUS, false);
 
-        // Divider below title
-        Display::drawHLine(12, Theme::CONTENT_Y + 26, Theme::SCREEN_WIDTH - 24, Theme::DIVIDER);
+        // Draw title with gradient background
+        Display::fillGradient(4, Theme::CONTENT_Y + 2, Theme::SCREEN_WIDTH - 8, titleCardH,
+                             Theme::COLOR_PRIMARY_DARK, Theme::COLOR_BG_ELEVATED);
+
+        // Title text (centered vertically in card)
+        Display::drawText(12, Theme::CONTENT_Y + 8, getTitle(), Theme::WHITE, 2);
+
+        // Visual separator between title and list
+        Display::drawHLine(4, Theme::CONTENT_Y + 32, Theme::SCREEN_WIDTH - 8, Theme::COLOR_DIVIDER);
     }
 
-    // Adjust list bounds below title
-    _listView.setBounds(0, Theme::CONTENT_Y + 30, Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT - 30);
+    // Adjust list bounds below title card
+    _listView.setBounds(0, Theme::CONTENT_Y + 36, Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT - 36);
     _listView.draw(fullRedraw);
 }
 
