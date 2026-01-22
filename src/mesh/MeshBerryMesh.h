@@ -395,6 +395,9 @@ protected:
     void onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
                         const mesh::Identity& sender, uint8_t* data, size_t len) override;
 
+    // Override to intercept DIRECT ACKs before MeshCore's early return
+    mesh::DispatcherAction onRecvPacket(mesh::Packet* pkt) override;
+
     void onAckRecv(mesh::Packet* packet, uint32_t ack_crc) override;
 
     // Channel message handling overrides
@@ -466,6 +469,7 @@ private:
         uint8_t payload[260];       // Stored payload for retry
         size_t payloadLen;          // Payload length
         uint8_t attempts;           // Send attempts
+        uint8_t pathLen;            // Path length for dynamic retry calculation
         bool isFlood;               // True if last send was flood
         bool active;                // Slot in use
     };
@@ -537,7 +541,9 @@ private:
 
     // Pending DM management
     int findFreePendingSlot();
+    int calculateMaxRetries(bool isFlood, uint8_t pathLen);
     void retryDMWithFlood(int pendingIdx);
+    void retryDMWithDirect(int pendingIdx);
     void checkPendingTimeouts();
 
     // Channel repeat tracking

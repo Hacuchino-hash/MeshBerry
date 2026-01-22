@@ -41,21 +41,34 @@ bool init() {
     Serial.println("[KEYBOARD] Initializing...");
 
     // I2C should already be initialized in main
-    // Check if keyboard controller responds
-    Wire.beginTransmission(KB_I2C_ADDR);
-    uint8_t error = Wire.endTransmission();
+    // Try multiple times with delays - ESP32-C3 keyboard controller
+    // may need extra time to boot after peripheral power enabled
+    const int MAX_RETRIES = 5;
+    const int RETRY_DELAY_MS = 100;
 
-    if (error == 0) {
-        keyboardInitialized = true;
-        Serial.println("[KEYBOARD] Controller detected at 0x55");
+    for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+            Serial.printf("[KEYBOARD] Retry %d/%d...\n", attempt + 1, MAX_RETRIES);
+            delay(RETRY_DELAY_MS);
+        }
 
-        // Turn on backlight by default
-        setBacklight(true);
-        return true;
-    } else {
-        Serial.printf("[KEYBOARD] Controller not found (error: %d)\n", error);
-        return false;
+        // Check if keyboard controller responds
+        Wire.beginTransmission(KB_I2C_ADDR);
+        uint8_t error = Wire.endTransmission();
+
+        if (error == 0) {
+            keyboardInitialized = true;
+            Serial.printf("[KEYBOARD] Controller detected at 0x55 (attempt %d/%d)\n",
+                          attempt + 1, MAX_RETRIES);
+
+            // Turn on backlight by default
+            setBacklight(true);
+            return true;
+        }
     }
+
+    Serial.printf("[KEYBOARD] Controller not found after %d attempts\n", MAX_RETRIES);
+    return false;
 }
 
 bool available() {

@@ -509,8 +509,56 @@ void MeshBerryMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     Serial.printf("[MESH] Message from %08X: %s\n", msg.senderId, msg.text);
 }
 
+mesh::DispatcherAction MeshBerryMesh::onRecvPacket(mesh::Packet* pkt) {
+    // INTERCEPT: Handle DIRECT-routed ACKs that MeshCore would skip
+    // MeshCore's Mesh.cpp (lines 80-90) returns ACTION_RELEASE without calling onAckRecv()
+    // for DIRECT ACKs, so we extract the CRC and call it manually
+
+    if (pkt->isRouteDirect() &&
+        pkt->path_len >= PATH_HASH_SIZE &&
+        self_id.isHashMatch(pkt->path)) {
+
+        // Handle regular DIRECT ACK packets
+        if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+            if (pkt->payload_len >= 4) {
+                uint32_t ack_crc;
+                memcpy(&ack_crc, &pkt->payload, 4);
+
+                // Call onAckRecv() manually (MeshCore won't call it)
+                onAckRecv(pkt, ack_crc);
+
+                Serial.printf("[MESH] DIRECT ACK intercepted: %08X\n", ack_crc);
+            }
+        }
+
+        // Handle MULTIPART ACK packets
+        else if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
+            if (pkt->payload_len >= 5) {
+                uint8_t remaining = pkt->payload[0] >> 4;
+                uint8_t type = pkt->payload[0] & 0x0F;
+
+                if (type == PAYLOAD_TYPE_ACK) {
+                    uint32_t ack_crc;
+                    memcpy(&ack_crc, &pkt->payload[1], 4);
+
+                    onAckRecv(pkt, ack_crc);
+
+                    Serial.printf("[MESH] DIRECT MULTIPART ACK intercepted: %08X (remaining=%d)\n",
+                                 ack_crc, remaining);
+                }
+            }
+        }
+    }
+
+    // Call parent implementation for normal processing (forwarding, etc.)
+    return mesh::Mesh::onRecvPacket(pkt);
+}
+
 void MeshBerryMesh::onAckRecv(mesh::Packet* packet, uint32_t ack_crc) {
-    Serial.printf("[MESH] ACK received: %08X\n", ack_crc);
+    // Show routing type to confirm if ACKs come via FLOOD or DIRECT
+    const char* routingType = packet->isRouteDirect() ? "DIRECT" : "FLOOD";
+    Serial.printf("[MESH] ACK received: %08X (routing=%s, path_len=%d)\n",
+                  ack_crc, routingType, packet->path_len);
 
     // Check if this ACK matches a pending DM
     for (int i = 0; i < MAX_PENDING_DMS; i++) {
@@ -518,10 +566,12 @@ void MeshBerryMesh::onAckRecv(mesh::Packet* packet, uint32_t ack_crc) {
             Serial.printf("[DM] Delivery confirmed for contact %08X (attempt %d)\n",
                           _pendingDMs[i].contactId, _pendingDMs[i].attempts);
 
-            // Learn path from ACK if it was flood-routed and has path info
-            if (packet->isRouteFlood() && packet->path_len > 0) {
+            // Learn path from any ACK that has path info (flood or direct)
+            if (packet->path_len > 0) {
                 learnPath(_pendingDMs[i].contactId, packet->path, packet->path_len);
-                Serial.printf("[ROUTE] Learned path from ACK: %d hops\n", packet->path_len);
+                Serial.printf("[ROUTE] Learned path from %s ACK: %d hops\n",
+                              packet->isRouteFlood() ? "FLOOD" : "DIRECT",
+                              packet->path_len);
             }
 
             // Mark as inactive and notify UI
@@ -716,7 +766,13 @@ int MeshBerryMesh::findChannelByHash(uint8_t hash) {
 }
 
 bool MeshBerryMesh::allowPacketForward(const mesh::Packet* packet) {
-    // Check if forwarding is enabled (can be toggled via CLI)
+    // Always forward DIRECT-routed packets (they have explicit paths)
+    // This is safe because DIRECT packets only go to nodes in the path
+    if (packet->isRouteDirect()) {
+        return true;
+    }
+
+    // For FLOOD packets, respect the forwarding setting
     return _forwardingEnabled;
 }
 
@@ -902,9 +958,23 @@ void MeshBerryMesh::disconnectRepeater() {
 }
 
 int MeshBerryMesh::searchPeersByHash(const uint8_t* hash) {
-    // DEBUG: Log the search
-    Serial.printf("[MESH] searchPeersByHash: looking for hash=%02X, pending=%d, connected=%d\n",
-                  hash[0], _pendingLoginAttempt, _repeaterConnected);
+    // DEBUG: Log the search (show FULL 8-byte hash)
+    Serial.printf("[MESH] searchPeersByHash: looking for hash %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                  hash[0], hash[1], hash[2], hash[3],
+                  hash[4], hash[5], hash[6], hash[7]);
+
+    // Debug: Show all active DM peers (with FULL 8-byte hash)
+    Serial.println("[MESH] Active DM peers:");
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive) {
+            uint8_t peerHash[8];
+            _dmPeers[i].identity.copyHashTo(peerHash);
+            Serial.printf("[MESH]   DM peer[%d]: contactId=%08X, hash=%02X%02X%02X%02X%02X%02X%02X%02X\n",
+                          i, _dmPeers[i].contactId,
+                          peerHash[0], peerHash[1], peerHash[2], peerHash[3],
+                          peerHash[4], peerHash[5], peerHash[6], peerHash[7]);
+        }
+    }
 
     // Reset last matched DM peer
     _lastMatchedDMPeer = -1;
@@ -1009,6 +1079,24 @@ bool MeshBerryMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const u
             }
             return true;
         }
+    }
+
+    // Check if this PATH_RETURN contains an embedded ACK
+    // Official firmware sends ACK this way for FLOOD-routed DMs
+    if (extra_type == PAYLOAD_TYPE_ACK && extra_len >= 4) {
+        Serial.println("[MESH] ACK embedded in PATH_RETURN (FLOOD routing)");
+
+        // Extract the 4-byte ACK CRC from extra data (little-endian - ESP32 native order)
+        uint32_t ack_crc;
+        memcpy(&ack_crc, extra, 4);  // Direct copy preserves platform byte order
+
+        Serial.printf("[MESH] Extracted ACK CRC from PATH: %08X\n", ack_crc);
+
+        // Process the ACK using existing onAckRecv handler
+        // This will match against pending DMs and mark as delivered
+        onAckRecv(packet, ack_crc);
+
+        // Don't return yet - continue to learn path below
     }
 
     // Learn the return path from the PATH_RETURN packet
@@ -1150,14 +1238,34 @@ void MeshBerryMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sende
             }
 
             // === SEND ACK ===
-            // Calculate ACK hash: truncated SHA256(timestamp+flags+text, sender_pub_key)
-            uint32_t ack_hash;
-            const uint8_t* senderPubKey = _dmPeers[dmIdx].identity.pub_key;
-            mesh::Utils::sha256((uint8_t*)&ack_hash, 4,
-                                data, 5 + textLen,        // timestamp + flags + text
-                                senderPubKey, PUB_KEY_SIZE);
+            // Calculate ACK hash matching meshcore-open format:
+            // Hash input: [timestamp(4)][attempt(1)][text][sender_pubkey(32)]
+            uint8_t ackHashInput[4 + 1 + 249 + 32];
+            size_t ackHashLen = 0;
 
-            Serial.printf("[DM] Sending ACK (hash=%08X)\n", ack_hash);
+            // Timestamp (4 bytes, already little-endian)
+            memcpy(ackHashInput + ackHashLen, data, 4);
+            ackHashLen += 4;
+
+            // Attempt byte (data[4])
+            ackHashInput[ackHashLen++] = data[4] & 0x03;
+
+            // Text
+            memcpy(ackHashInput + ackHashLen, data + 5, textLen);
+            ackHashLen += textLen;
+
+            // Sender's public key (32 bytes)
+            const uint8_t* senderPubKey = _dmPeers[dmIdx].identity.pub_key;
+            memcpy(ackHashInput + ackHashLen, senderPubKey, PUB_KEY_SIZE);
+            ackHashLen += PUB_KEY_SIZE;
+
+            // Calculate ACK hash from complete buffer
+            uint32_t ack_hash;
+            mesh::Utils::sha256((uint8_t*)&ack_hash, 4,
+                                ackHashInput, ackHashLen);
+
+            Serial.printf("[DM] Sending ACK (hash=%08X, input %d bytes)\n",
+                          ack_hash, (int)ackHashLen);
 
             // Send path return with ACK embedded (provides sender with return path)
             if (packet->isRouteFlood()) {
@@ -1229,11 +1337,33 @@ int MeshBerryMesh::findOrCreateDMPeer(uint32_t contactId) {
         _dmPeers[slot].isActive = false;
     }
 
+    // DEBUG: Show the pubKey BEFORE creating Identity
+    Serial.printf("[DM] About to create Identity for contact %s (id=%08X)\n", c->name, contactId);
+    Serial.printf("[DM]   Contact pubKey (full 32 bytes):\n[DM]   ");
+    for (int i = 0; i < 32; i++) {
+        Serial.printf("%02X", c->pubKey[i]);
+        if (i == 15) Serial.print("\n[DM]   ");
+    }
+    Serial.println();
+
     // Set up identity and compute shared secret via ECDH
     _dmPeers[slot].contactId = contactId;
     _dmPeers[slot].identity = mesh::Identity(c->pubKey);
     self_id.calcSharedSecret(_dmPeers[slot].sharedSecret, c->pubKey);
     _dmPeers[slot].isActive = true;
+
+    // DEBUG: Show the full Identity hash (8 bytes, not just 4) and verify against pub_key
+    uint8_t fullHash[8];
+    _dmPeers[slot].identity.copyHashTo(fullHash);
+    Serial.printf("[DM] Created DM peer[%d] for contactId=%08X\n", slot, contactId);
+    Serial.printf("[DM]   Identity hash: %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                  fullHash[0], fullHash[1], fullHash[2], fullHash[3],
+                  fullHash[4], fullHash[5], fullHash[6], fullHash[7]);
+    Serial.printf("[DM]   Identity.pub_key first 8: %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                  _dmPeers[slot].identity.pub_key[0], _dmPeers[slot].identity.pub_key[1],
+                  _dmPeers[slot].identity.pub_key[2], _dmPeers[slot].identity.pub_key[3],
+                  _dmPeers[slot].identity.pub_key[4], _dmPeers[slot].identity.pub_key[5],
+                  _dmPeers[slot].identity.pub_key[6], _dmPeers[slot].identity.pub_key[7]);
 
     // Initialize path from contact if available
     if (c->outPathLen >= 0 && isPathValid(c->outPathLen, c->pathLearnedAt)) {
@@ -1262,6 +1392,8 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
     if (!text || strlen(text) == 0) return false;
 
     // Find or create DM peer entry
+    Serial.printf("[DM] sendDirectMessage: contactId=%08X\n", contactId);
+
     int peerIdx = findOrCreateDMPeer(contactId);
     if (peerIdx < 0) {
         Serial.println("[DM] Failed to create peer entry");
@@ -1269,6 +1401,14 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
     }
 
     DMPeer& peer = _dmPeers[peerIdx];
+
+    // Debug: Show the DM peer Identity hash (FULL 8 bytes)
+    uint8_t peerHash[8];
+    peer.identity.copyHashTo(peerHash);
+    Serial.printf("[DM] Using DM peer[%d]: contactId=%08X\n", peerIdx, peer.contactId);
+    Serial.printf("[DM]   Identity hash: %02X%02X%02X%02X%02X%02X%02X%02X\n",
+                  peerHash[0], peerHash[1], peerHash[2], peerHash[3],
+                  peerHash[4], peerHash[5], peerHash[6], peerHash[7]);
 
     // Build payload: [4-byte timestamp][1-byte flags][text]
     // MeshCore format: flags byte contains (TXT_TYPE << 2) | attempt
@@ -1278,8 +1418,9 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
     if (textLen > 249) textLen = 249;  // Limit to fit with header (5 bytes overhead)
 
     uint8_t payload[260];
+    // Build payload for transmission: [timestamp(4)][attempt(1)][text]
     memcpy(payload, &ts, 4);           // Timestamp at offset 0-3
-    payload[4] = 0x00;                 // Flags: TXT_TYPE_PLAIN (0), attempt 0
+    payload[4] = 0x00;                 // Attempt byte (0 for first send)
     memcpy(payload + 5, text, textLen);// Text at offset 5+
 
     size_t payloadLen = 5 + textLen;
@@ -1287,13 +1428,33 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
     Serial.printf("[DM] Sending to %08X: \"%s\" (ts=%u, len=%d)\n",
                   contactId, text, ts, (int)textLen);
 
-    // Calculate expected ACK CRC: SHA256(timestamp+flags+text, our_pub_key) truncated to 4 bytes
-    // Receiver uses our pub_key since we are the sender
+    // Calculate expected ACK CRC matching meshcore-open format:
+    // Hash input: [timestamp(4)][attempt(1)][text][sender_pubkey(32)]
+    uint8_t hashInput[4 + 1 + 249 + 32];  // Max size
+    size_t hashLen = 0;
+
+    // Timestamp (little-endian, already in correct format)
+    memcpy(hashInput + hashLen, &ts, 4);
+    hashLen += 4;
+
+    // Attempt (lower 2 bits only, matching meshcore-open)
+    hashInput[hashLen++] = 0x00 & 0x03;  // First send is attempt 0
+
+    // Text
+    memcpy(hashInput + hashLen, text, textLen);
+    hashLen += textLen;
+
+    // Sender public key (32 bytes)
+    memcpy(hashInput + hashLen, self_id.pub_key, PUB_KEY_SIZE);
+    hashLen += PUB_KEY_SIZE;
+
+    // Calculate ACK: SHA256 of entire buffer, truncated to 4 bytes
     uint32_t expected_ack;
     mesh::Utils::sha256((uint8_t*)&expected_ack, 4,
-                        payload, payloadLen,
-                        self_id.pub_key, PUB_KEY_SIZE);
-    Serial.printf("[DM] Expected ACK CRC: %08X\n", expected_ack);
+                        hashInput, hashLen);
+
+    Serial.printf("[DM] Expected ACK CRC: %08X (hash input %d bytes)\n",
+                  expected_ack, (int)hashLen);
 
     // Return ACK CRC to caller if requested
     if (out_ack_crc) {
@@ -1313,14 +1474,26 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
 
     // Check if we have a valid path to this peer
     bool useDirect = isPathValid(peer.outPathLen, peer.pathLearnedAt);
+
+    // Debug output for routing decision
     if (useDirect) {
+        if (peer.outPathLen == 0) {
+            Serial.printf("[DM] Using DIRECT route (direct neighbor, learned %lums ago)\n",
+                          millis() - peer.pathLearnedAt);
+        } else {
+            Serial.printf("[DM] Using DIRECT route (%d hops, learned %lums ago)\n",
+                          peer.outPathLen, millis() - peer.pathLearnedAt);
+        }
         // Use direct routing with learned path
         sendDirect(pkt, peer.outPath, peer.outPathLen);
-        Serial.printf("[DM] Message sent via DIRECT route (%d hops)\n", peer.outPathLen);
     } else {
+        if (peer.outPathLen < 0) {
+            Serial.printf("[DM] Using FLOOD route (no path learned)\n");
+        } else {
+            Serial.printf("[DM] Using FLOOD route (path expired)\n");
+        }
         // No valid path - use flood routing
         sendFlood(pkt);
-        Serial.println("[DM] Message sent via FLOOD (no path known)");
     }
 
     // Track pending DM for delivery status
@@ -1328,15 +1501,15 @@ bool MeshBerryMesh::sendDirectMessage(uint32_t contactId, const char* text, uint
         _pendingDMs[pendingSlot].ack_crc = expected_ack;
         _pendingDMs[pendingSlot].contactId = contactId;
         _pendingDMs[pendingSlot].sentAt = millis();
-        // Direct timeout: 10s, Flood timeout: 20s
-        _pendingDMs[pendingSlot].timeout = millis() + (useDirect ? 10000 : 20000);
+        // DIRECT timeout: 20s, FLOOD timeout: 20s
+        _pendingDMs[pendingSlot].timeout = millis() + 20000;
         memcpy(_pendingDMs[pendingSlot].payload, payload, payloadLen);
         _pendingDMs[pendingSlot].payloadLen = payloadLen;
         _pendingDMs[pendingSlot].attempts = 1;
+        _pendingDMs[pendingSlot].pathLen = useDirect ? peer.outPathLen : 0;
         _pendingDMs[pendingSlot].isFlood = !useDirect;
         _pendingDMs[pendingSlot].active = true;
-        Serial.printf("[DM] Tracking delivery in slot %d (timeout in %dms)\n",
-                      pendingSlot, useDirect ? 10000 : 20000);
+        Serial.printf("[DM] Tracking delivery in slot %d (timeout in 20000ms)\n", pendingSlot);
     }
 
     return true;
@@ -1377,10 +1550,20 @@ void MeshBerryMesh::learnPath(uint32_t contactId, const uint8_t* path, uint8_t p
 }
 
 bool MeshBerryMesh::isPathValid(int8_t pathLen, uint32_t learnedAt) const {
-    if (pathLen < 0) return false;  // Unknown path
-    if (pathLen == 0) return true;  // Direct neighbor (0 hops = direct)
+    if (pathLen < 0) return false;  // Unknown path (-1 = never learned)
 
-    // Check for expiration
+    // pathLen == 0 can mean two things:
+    // 1. Never learned a path (learnedAt == 0) → FLOOD
+    // 2. Confirmed direct neighbor (learnedAt > 0) → DIRECT
+    if (pathLen == 0) {
+        if (learnedAt == 0) {
+            return false;  // No path learned - must FLOOD
+        }
+        // Direct neighbor confirmed by PATH_RETURN
+        return true;
+    }
+
+    // Multi-hop path - check for expiration
     uint32_t age = millis() - learnedAt;
     if (age > PATH_EXPIRY_MS) {
         return false;  // Path expired
@@ -1489,6 +1672,83 @@ void MeshBerryMesh::retryDMWithFlood(int pendingIdx) {
     Serial.printf("[DM] Retry sent via FLOOD (timeout in 20s)\n");
 }
 
+int MeshBerryMesh::calculateMaxRetries(bool isFlood, uint8_t pathLen) {
+    if (isFlood) {
+        // Flood routing: conservative retry count since it broadcasts
+        return 3;  // 4 total attempts (1 initial + 3 retries)
+    } else {
+        // Direct routing: retries based on hop count
+        // More hops = more potential points of failure
+        // Formula: base 2 retries + 1 per hop (capped at 8)
+        int retries = 2 + pathLen;
+        return (retries > 8) ? 8 : retries;
+        // Examples:
+        //   0 hops (direct neighbor): 2 retries (3 total attempts)
+        //   1 hop: 3 retries (4 total attempts)
+        //   2 hops: 4 retries (5 total attempts)
+        //   5 hops: 7 retries (8 total attempts)
+        //   10+ hops: 8 retries (9 total attempts, capped)
+    }
+}
+
+void MeshBerryMesh::retryDMWithDirect(int pendingIdx) {
+    if (pendingIdx < 0 || pendingIdx >= MAX_PENDING_DMS) return;
+    PendingDM& pending = _pendingDMs[pendingIdx];
+    if (!pending.active) return;
+
+    Serial.printf("[DM] Retrying message to %08X via DIRECT (attempt %d)\n",
+                  pending.contactId, pending.attempts + 1);
+
+    // Find the DM peer for this contact
+    int peerIdx = -1;
+    for (int i = 0; i < MAX_DM_PEERS; i++) {
+        if (_dmPeers[i].isActive && _dmPeers[i].contactId == pending.contactId) {
+            peerIdx = i;
+            break;
+        }
+    }
+    if (peerIdx < 0) {
+        Serial.println("[DM] Peer not found for retry - marking failed");
+        pending.active = false;
+        if (_deliveryCallback) {
+            _deliveryCallback(pending.contactId, pending.ack_crc, false, pending.attempts);
+        }
+        return;
+    }
+
+    DMPeer& peer = _dmPeers[peerIdx];
+
+    // Verify path is still valid
+    if (!isPathValid(peer.outPathLen, peer.pathLearnedAt)) {
+        Serial.println("[DM] Path expired during retry - switching to flood");
+        retryDMWithFlood(pendingIdx);
+        return;
+    }
+
+    // Create new packet with same payload
+    mesh::Packet* pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, peer.identity,
+                                        peer.sharedSecret, pending.payload, pending.payloadLen);
+    if (!pkt) {
+        Serial.println("[DM] Failed to create retry packet");
+        pending.active = false;
+        if (_deliveryCallback) {
+            _deliveryCallback(pending.contactId, pending.ack_crc, false, pending.attempts);
+        }
+        return;
+    }
+
+    // Send via direct route with same path
+    sendDirect(pkt, peer.outPath, peer.outPathLen);
+
+    // Update tracking
+    pending.attempts++;
+    pending.isFlood = false;
+    pending.timeout = millis() + 10000;  // 10s timeout for direct
+    pending.sentAt = millis();
+
+    Serial.printf("[DM] Retry sent via DIRECT route (%d hops)\n", peer.outPathLen);
+}
+
 void MeshBerryMesh::checkPendingTimeouts() {
     uint32_t now = millis();
 
@@ -1496,10 +1756,14 @@ void MeshBerryMesh::checkPendingTimeouts() {
         if (!_pendingDMs[i].active) continue;
 
         if (now >= _pendingDMs[i].timeout) {
-            if (_pendingDMs[i].isFlood || _pendingDMs[i].attempts >= 2) {
-                // Already tried flood OR max attempts reached - mark as failed
-                Serial.printf("[DM] Delivery FAILED for contact %08X after %d attempts\n",
-                              _pendingDMs[i].contactId, _pendingDMs[i].attempts);
+            // Calculate max retries based on routing method and path length
+            int maxRetries = calculateMaxRetries(_pendingDMs[i].isFlood,
+                                                  _pendingDMs[i].pathLen);
+
+            if (_pendingDMs[i].attempts > maxRetries) {
+                // Max retries reached - mark as failed
+                Serial.printf("[DM] Delivery FAILED for contact %08X after %d attempts (max %d retries)\n",
+                              _pendingDMs[i].contactId, _pendingDMs[i].attempts, maxRetries);
 
                 uint32_t contactId = _pendingDMs[i].contactId;
                 uint32_t ack_crc = _pendingDMs[i].ack_crc;
@@ -1513,10 +1777,18 @@ void MeshBerryMesh::checkPendingTimeouts() {
                     _deliveryCallback(contactId, ack_crc, false, attempts);
                 }
             } else {
-                // Direct timed out - retry with flood
-                Serial.printf("[DM] Direct route timed out for %08X - retrying with flood\n",
-                              _pendingDMs[i].contactId);
-                retryDMWithFlood(i);
+                // Retry - fallback to FLOOD if DIRECT fails (recipient might not have return path)
+                if (_pendingDMs[i].isFlood) {
+                    Serial.printf("[DM] Flood timed out for %08X - retry %d/%d\n",
+                                  _pendingDMs[i].contactId, _pendingDMs[i].attempts, maxRetries + 1);
+                    retryDMWithFlood(i);
+                } else {
+                    // DIRECT failed - fallback to FLOOD for next attempt
+                    Serial.printf("[DM] Direct timed out for %08X - falling back to FLOOD for retry %d/%d\n",
+                                  _pendingDMs[i].contactId, _pendingDMs[i].attempts, maxRetries + 1);
+                    _pendingDMs[i].isFlood = true;  // Switch to FLOOD for retries
+                    retryDMWithFlood(i);
+                }
             }
         }
     }
