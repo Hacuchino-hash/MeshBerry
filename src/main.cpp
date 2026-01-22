@@ -29,6 +29,7 @@
 #include <SPIFFS.h>
 #include <driver/gpio.h>
 #include <soc/gpio_reg.h>  // For direct GPIO register read (GPIO 0 workaround)
+#include <esp_task_wdt.h>
 #include "config.h"
 
 // Board abstraction
@@ -107,6 +108,10 @@ uint32_t gpsBaudRate = 0;  // Detected GPS baud rate (9600 or 38400)
 static uint32_t lastAdvertTime = 0;
 static const uint32_t ADVERT_INTERVAL_MS = 300000;  // 5 minutes
 static bool rtcSyncedFromGps = false;  // Track if we've synced RTC from GPS
+
+// RTC memory for boot loop detection (survives reboots, reset on power loss)
+RTC_DATA_ATTR uint32_t bootCount = 0;
+RTC_DATA_ATTR uint32_t lastBootTime = 0;
 static bool timezoneSynced = false;    // Track if timezone calculated from GPS
 
 // NOTE: Power management state (lastActivityTime, backlight, sleep) is now
@@ -212,6 +217,37 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    // Configure watchdog timer - disable panic on timeout to allow graceful recovery
+    esp_task_wdt_init(15, false);  // 15 second timeout, no panic
+    esp_task_wdt_add(NULL);  // Add current task to watchdog
+
+    // Boot loop detection - check if we're boot looping
+    bootCount++;
+    uint32_t now = millis();
+    uint32_t timeSinceLastBoot = now - lastBootTime;
+
+    if (timeSinceLastBoot < 5000) {  // Boot within 5 seconds of previous boot
+        Serial.printf("[BOOT] Rapid boot detected! Count: %d (interval: %lums)\n",
+                      bootCount, timeSinceLastBoot);
+
+        if (bootCount > 3) {
+            Serial.println("[BOOT] BOOT LOOP DETECTED - Entering safe mode");
+            Serial.println("[BOOT] Safe mode: Sleep disabled for 30 seconds");
+
+            // Stay awake for 30 seconds to allow user intervention
+            delay(30000);
+
+            // Reset boot count after recovery period
+            bootCount = 0;
+            Serial.println("[BOOT] Safe mode complete - resuming normal operation");
+        }
+    } else {
+        // Normal boot - reset counter
+        bootCount = 0;
+    }
+
+    lastBootTime = now;
+
     // Initialize power management FIRST to detect wake reason
     Power::init();
 
@@ -299,12 +335,34 @@ void setup() {
 // =============================================================================
 
 void loop() {
+    // Heap monitoring - check every 10 seconds for low memory
+    static uint32_t lastHeapCheck = 0;
+    uint32_t now = millis();
+
+    if (now - lastHeapCheck > 10000) {
+        uint32_t freeHeap = ESP.getFreeHeap();
+        uint32_t largestBlock = ESP.getMaxAllocHeap();
+
+        if (freeHeap < 10000) {  // Less than 10KB free
+            Serial.printf("[MEM] LOW HEAP WARNING: %u bytes free, largest block: %u\n",
+                          freeHeap, largestBlock);
+        }
+
+        if (freeHeap < 5000) {  // Critical low memory (< 5KB)
+            Serial.println("[MEM] CRITICAL LOW MEMORY - Forcing restart to prevent crash");
+            Serial.flush();
+            delay(1000);
+            ESP.restart();
+        }
+
+        lastHeapCheck = now;
+    }
+
     // Process mesh network
     if (theMesh) {
         theMesh->loop();
 
         // Periodic advertisement
-        uint32_t now = millis();
         if (now - lastAdvertTime > ADVERT_INTERVAL_MS) {
             theMesh->sendAdvertisement();
             lastAdvertTime = now;
@@ -441,6 +499,9 @@ void loop() {
     // Update UI system (handles redraws)
     Screens.update();
 
+    // Feed watchdog to prevent timeout during normal operation
+    esp_task_wdt_reset();
+
     // Yield to other tasks
     delay(1);
 }
@@ -476,6 +537,10 @@ void initHardware() {
         }
     }
     Serial.printf("[I2C] Scan complete. Found %d device(s)\n", foundDevices);
+
+    // Give keyboard controller extra time to fully initialize
+    // ESP32-C3 may need a moment after I2C bus starts
+    delay(150);
 
     // Initialize display FIRST - before any other SPI users
     if (Display::init()) {

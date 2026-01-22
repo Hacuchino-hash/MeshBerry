@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\Josh\\\\Documents\\\\GitHub\\\\MeshBerry\" log --oneline --all)",
+      "Bash(wc:*)",
+      "Bash(pio:*)",
+      "Bash(python -m platformio:*)",
+      "Bash(python3 -m platformio:*)",
+      "Bash(export PATH=\"/c/Users/Josh/.platformio/penv/Scripts:$PATH\")",
+      "Bash(git config:*)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(C:UsersJosh.platformiopenvScriptspio.exe run)",
+      "Bash(/c/Users/Josh/.platformio/penv/Scripts/pio.exe run:*)",
+      "Bash(find:*)",
+      "Bash(~/.platformio/penv/Scripts/platformio.exe run -t upload)",
+      "Bash(C:UsersJosh.platformiopenvScriptsplatformio.exe run)",
+      "Bash(~/.platformio/penv/Scripts/pio.exe run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge:*)",
+      "Bash(/c/Users/Josh/.platformio/penv/Scripts/platformio.exe run:*)"
+    ]
+  }
+}

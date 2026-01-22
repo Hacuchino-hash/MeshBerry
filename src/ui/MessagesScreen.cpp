@@ -12,6 +12,7 @@
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 #include "../settings/SettingsManager.h"
+#include "../settings/MessageArchive.h"
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
@@ -260,6 +261,44 @@ void MessagesScreen::onConversationSelected(int index) {
 }
 
 void MessagesScreen::onChannelMessage(int channelIdx, const char* senderAndText, uint32_t timestamp, uint8_t hops) {
+    // CRITICAL FIX: Save message to persistent storage IMMEDIATELY
+    // This ensures messages are saved regardless of which screen is active
+    // Parse sender and text from combined format ("Sender: message")
+    char sender[ARCHIVE_SENDER_LEN];
+    char text[ARCHIVE_TEXT_LEN];
+
+    const char* colon = strchr(senderAndText, ':');
+    if (colon && colon > senderAndText) {
+        size_t nameLen = colon - senderAndText;
+        if (nameLen >= sizeof(sender)) nameLen = sizeof(sender) - 1;
+        strncpy(sender, senderAndText, nameLen);
+        sender[nameLen] = '\0';
+
+        // Skip ": " after colon
+        const char* msgStart = colon + 1;
+        while (*msgStart == ' ') msgStart++;
+        strncpy(text, msgStart, sizeof(text) - 1);
+        text[sizeof(text) - 1] = '\0';
+    } else {
+        // No colon found, treat whole thing as text from unknown sender
+        strcpy(sender, "Unknown");
+        strncpy(text, senderAndText, sizeof(text) - 1);
+        text[sizeof(text) - 1] = '\0';
+    }
+
+    // Build archived message and save immediately
+    ArchivedMessage archived;
+    archived.clear();
+    archived.timestamp = timestamp;
+    strncpy(archived.sender, sender, ARCHIVE_SENDER_LEN - 1);
+    archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
+    strncpy(archived.text, text, ARCHIVE_TEXT_LEN - 1);
+    archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
+    archived.isOutgoing = 0;  // Incoming message
+
+    MessageArchive::saveChannelMessage(channelIdx, archived);
+    Serial.printf("[MESSAGES] Saved channel message: ch=%d, sender=%s\n", channelIdx, sender);
+
     // Find the conversation for this channel
     for (int i = 0; i < _conversationCount; i++) {
         if (_conversations[i].channelIdx == channelIdx) {

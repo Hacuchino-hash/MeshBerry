@@ -471,16 +471,19 @@ void ChatScreen::addMessage(const char* sender, const char* text, uint32_t times
     msg.repeatCount = 0;
     msg.hops = hops;
 
-    // Persist to archive
-    ArchivedMessage archived;
-    archived.clear();
-    archived.timestamp = timestamp;
-    strncpy(archived.sender, sender, ARCHIVE_SENDER_LEN - 1);
-    archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
-    strncpy(archived.text, text, ARCHIVE_TEXT_LEN - 1);
-    archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
-    archived.isOutgoing = isOutgoing ? 1 : 0;
-    MessageArchive::saveChannelMessage(_channelIdx, archived);
+    // Persist outgoing messages to archive
+    // Incoming messages are saved by MessagesScreen::onChannelMessage()
+    if (isOutgoing) {
+        ArchivedMessage archived;
+        archived.clear();
+        archived.timestamp = timestamp;
+        strncpy(archived.sender, sender, ARCHIVE_SENDER_LEN - 1);
+        archived.sender[ARCHIVE_SENDER_LEN - 1] = '\0';
+        strncpy(archived.text, text, ARCHIVE_TEXT_LEN - 1);
+        archived.text[ARCHIVE_TEXT_LEN - 1] = '\0';
+        archived.isOutgoing = 1;
+        MessageArchive::saveChannelMessage(_channelIdx, archived);
+    }
 
     // Auto-scroll to bottom
     _scrollOffset = 0;

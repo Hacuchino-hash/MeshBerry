@@ -103,32 +103,35 @@ static fs::FS& getFS() {
 }
 
 // Helper to build full path with appropriate prefix
-static String buildPath(const char* path) {
+// Uses static buffer to avoid heap fragmentation from String concatenation
+static const char* buildPath(const char* path, char* buffer, size_t bufferSize) {
     // For SD card, files go under /meshberry
     // For SPIFFS, files go in root (limited space)
     if (sdAvailable) {
         if (path[0] == '/') {
-            return String("/meshberry") + path;
+            snprintf(buffer, bufferSize, "/meshberry%s", path);
         } else {
-            return String("/meshberry/") + path;
+            snprintf(buffer, bufferSize, "/meshberry/%s", path);
         }
     } else {
         // SPIFFS - use path as-is but ensure it starts with /
         if (path[0] == '/') {
-            return String(path);
+            snprintf(buffer, bufferSize, "%s", path);
         } else {
-            return String("/") + path;
+            snprintf(buffer, bufferSize, "/%s", path);
         }
     }
+    return buffer;
 }
 
 bool writeFile(const char* path, const uint8_t* data, size_t len) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
-    File file = getFS().open(fullPath.c_str(), FILE_WRITE);
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    File file = getFS().open(fullPath, FILE_WRITE);
     if (!file) {
-        Serial.printf("[STORAGE] Failed to open %s for writing\n", fullPath.c_str());
+        Serial.printf("[STORAGE] Failed to open %s for writing\n", fullPath);
         return false;
     }
 
@@ -146,13 +149,14 @@ bool writeFile(const char* path, const uint8_t* data, size_t len) {
 bool appendFile(const char* path, const uint8_t* data, size_t len) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
-    File file = getFS().open(fullPath.c_str(), FILE_APPEND);
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    File file = getFS().open(fullPath, FILE_APPEND);
     if (!file) {
         // File might not exist, try creating it
-        file = getFS().open(fullPath.c_str(), FILE_WRITE);
+        file = getFS().open(fullPath, FILE_WRITE);
         if (!file) {
-            Serial.printf("[STORAGE] Failed to open %s for append\n", fullPath.c_str());
+            Serial.printf("[STORAGE] Failed to open %s for append\n", fullPath);
             return false;
         }
     }
@@ -171,8 +175,9 @@ bool appendFile(const char* path, const uint8_t* data, size_t len) {
 bool readFile(const char* path, uint8_t* buffer, size_t maxLen, size_t* bytesRead) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
-    File file = getFS().open(fullPath.c_str(), FILE_READ);
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    File file = getFS().open(fullPath, FILE_READ);
     if (!file) {
         return false;
     }
@@ -190,22 +195,25 @@ bool readFile(const char* path, uint8_t* buffer, size_t maxLen, size_t* bytesRea
 bool fileExists(const char* path) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
-    return getFS().exists(fullPath.c_str());
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    return getFS().exists(fullPath);
 }
 
 bool deleteFile(const char* path) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
-    return getFS().remove(fullPath.c_str());
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    return getFS().remove(fullPath);
 }
 
 size_t getFileSize(const char* path) {
     if (!isAvailable()) return 0;
 
-    String fullPath = buildPath(path);
-    File file = getFS().open(fullPath.c_str(), FILE_READ);
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
+    File file = getFS().open(fullPath, FILE_READ);
     if (!file) {
         return 0;
     }
@@ -218,14 +226,15 @@ size_t getFileSize(const char* path) {
 bool createDir(const char* path) {
     if (!isAvailable()) return false;
 
-    String fullPath = buildPath(path);
+    char pathBuffer[256];
+    const char* fullPath = buildPath(path, pathBuffer, sizeof(pathBuffer));
 
     // SPIFFS doesn't support directories, just return true
     if (!sdAvailable) {
         return true;
     }
 
-    return SD.mkdir(fullPath.c_str());
+    return SD.mkdir(fullPath);
 }
 
 size_t getAvailableSpace() {
