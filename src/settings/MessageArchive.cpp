@@ -10,6 +10,8 @@
 #include "MessageArchive.h"
 #include "../drivers/storage.h"
 #include <string.h>
+#include <SD.h>
+#include <SPIFFS.h>
 
 // Path templates
 static const char* CHANNEL_PATH_FMT = "/channels/ch%d.bin";
@@ -17,6 +19,34 @@ static const char* DM_PATH_FMT = "/dms/dm_%08X.bin";
 
 // Buffer for path building
 static char pathBuffer[48];
+
+// Helper to get the appropriate filesystem (SD or SPIFFS)
+static fs::FS& getFS() {
+    if (Storage::isSDAvailable()) {
+        return SD;
+    }
+    return SPIFFS;
+}
+
+// Helper to build full path with appropriate prefix
+static const char* buildFullPath(const char* path, char* buffer, size_t bufferSize) {
+    if (Storage::isSDAvailable()) {
+        // SD card: prefix with /meshberry
+        if (path[0] == '/') {
+            snprintf(buffer, bufferSize, "/meshberry%s", path);
+        } else {
+            snprintf(buffer, bufferSize, "/meshberry/%s", path);
+        }
+    } else {
+        // SPIFFS: use path as-is but ensure it starts with /
+        if (path[0] == '/') {
+            snprintf(buffer, bufferSize, "%s", path);
+        } else {
+            snprintf(buffer, bufferSize, "/%s", path);
+        }
+    }
+    return buffer;
+}
 
 namespace MessageArchive {
 
@@ -91,118 +121,140 @@ static bool createArchive(const char* path) {
 
 /**
  * Append a message to an archive file, handling rotation if needed
+ * OPTIMIZED: Uses seek operations to avoid heap allocations
  */
 static bool appendMessage(const char* path, const ArchivedMessage& msg) {
+    char fullPath[256];
+    buildFullPath(path, fullPath, sizeof(fullPath));
+
     ArchiveHeader header;
 
-    // Check if file exists
-    if (!readHeader(path, header)) {
-        // Create new archive
+    // Check if file exists and read header
+    File file = getFS().open(fullPath, "r+");  // Read-write mode
+    if (!file) {
+        // File doesn't exist, create new archive
         if (!createArchive(path)) {
             Serial.printf("[ARCHIVE] Failed to create %s\n", path);
+            return false;
+        }
+        // Open newly created file
+        file = getFS().open(fullPath, "r+");
+        if (!file) {
             return false;
         }
         header.magic = ARCHIVE_MAGIC;
         header.version = ARCHIVE_VERSION;
         header.messageCount = 0;
         header.reserved = 0;
+    } else {
+        // Read existing header
+        file.read((uint8_t*)&header, sizeof(ArchiveHeader));
+
+        if (header.magic != ARCHIVE_MAGIC) {
+            file.close();
+            Serial.printf("[ARCHIVE] Invalid header in %s\n", path);
+            return false;
+        }
     }
 
     // Check if we need to rotate (remove oldest messages)
     if (header.messageCount >= MAX_ARCHIVED_MESSAGES) {
-        // Read all messages, drop oldest, rewrite file
+        file.close();  // Close before rotation
+
+        // Rotation still needs heap allocation, but happens much less frequently (every 100 messages)
+        // TODO: Optimize rotation in future if needed
         ArchivedMessage* buffer = new ArchivedMessage[MAX_ARCHIVED_MESSAGES];
         if (!buffer) {
             Serial.println("[ARCHIVE] Out of memory for rotation");
             return false;
         }
 
-        // Read existing messages
-        size_t bytesRead = 0;
-        size_t dataSize = header.messageCount * sizeof(ArchivedMessage);
-
-        // Open file and seek past header
-        // Since Storage doesn't have seek, we need to read the whole file
-        size_t totalSize = sizeof(ArchiveHeader) + dataSize;
-        uint8_t* fileBuffer = new uint8_t[totalSize];
-        if (!fileBuffer) {
+        // Reopen and read messages
+        file = getFS().open(fullPath, "r");
+        if (!file) {
             delete[] buffer;
-            Serial.println("[ARCHIVE] Out of memory for file buffer");
             return false;
         }
 
-        if (!Storage::readFile(path, fileBuffer, totalSize, &bytesRead)) {
+        file.seek(sizeof(ArchiveHeader));  // Skip header
+        size_t messagesRead = file.read((uint8_t*)buffer, header.messageCount * sizeof(ArchivedMessage));
+        file.close();
+
+        if (messagesRead != header.messageCount * sizeof(ArchivedMessage)) {
             delete[] buffer;
-            delete[] fileBuffer;
+            Serial.println("[ARCHIVE] Failed to read messages for rotation");
             return false;
         }
-
-        // Copy messages (skip header)
-        memcpy(buffer, fileBuffer + sizeof(ArchiveHeader), dataSize);
-        delete[] fileBuffer;
 
         // Keep last (MAX_ARCHIVED_MESSAGES - 10) messages to make room
         int keepCount = MAX_ARCHIVED_MESSAGES - 10;
         int skipCount = header.messageCount - keepCount;
 
-        // Create new file with rotated messages
+        // Rewrite file with rotated messages
         header.messageCount = keepCount;
-        if (!writeHeader(path, header)) {
+        header.reserved = 0;
+
+        file = getFS().open(fullPath, "w");  // Overwrite mode
+        if (!file) {
             delete[] buffer;
             return false;
         }
 
-        // Append kept messages
-        if (!Storage::appendFile(path, (const uint8_t*)&buffer[skipCount],
-                                  keepCount * sizeof(ArchivedMessage))) {
-            delete[] buffer;
-            return false;
-        }
+        // Write header
+        file.write((uint8_t*)&header, sizeof(ArchiveHeader));
+        // Write kept messages
+        file.write((uint8_t*)&buffer[skipCount], keepCount * sizeof(ArchivedMessage));
+        file.close();
 
         delete[] buffer;
+
+        // Reopen for appending new message
+        file = getFS().open(fullPath, "r+");
+        if (!file) {
+            return false;
+        }
+        file.read((uint8_t*)&header, sizeof(ArchiveHeader));
     }
 
-    // Append new message
-    if (!Storage::appendFile(path, (const uint8_t*)&msg, sizeof(ArchivedMessage))) {
+    // Append new message to end of file
+    file.seek(0, SeekEnd);
+    size_t written = file.write((uint8_t*)&msg, sizeof(ArchivedMessage));
+
+    if (written != sizeof(ArchivedMessage)) {
+        file.close();
         Serial.printf("[ARCHIVE] Failed to append to %s\n", path);
         return false;
     }
 
-    // Update header with new count
+    // Update header count (in-place, NO heap allocation)
     header.messageCount++;
+    file.seek(0, SeekSet);  // Go to start of file
+    file.write((uint8_t*)&header, sizeof(ArchiveHeader));
 
-    // Rewrite header (need to read whole file, update header, write back)
-    // For efficiency, we'll read the file, update header in memory, write back
-    size_t fileSize = Storage::getFileSize(path);
-    uint8_t* fileData = new uint8_t[fileSize];
-    if (!fileData) {
-        Serial.println("[ARCHIVE] Out of memory for header update");
-        return false;
-    }
-
-    size_t bytesRead = 0;
-    if (!Storage::readFile(path, fileData, fileSize, &bytesRead)) {
-        delete[] fileData;
-        return false;
-    }
-
-    // Update header in buffer
-    memcpy(fileData, &header, sizeof(ArchiveHeader));
-
-    // Write back
-    bool success = Storage::writeFile(path, fileData, fileSize);
-    delete[] fileData;
-
-    return success;
+    file.close();
+    return true;
 }
 
 /**
  * Load messages from archive file
+ * OPTIMIZED: Streams messages directly from file, NO heap allocation
  * @return Number of messages loaded
  */
 static int loadMessages(const char* path, ArchivedMessage* buffer, int maxCount) {
+    char fullPath[256];
+    buildFullPath(path, fullPath, sizeof(fullPath));
+
+    // Open file for reading
+    File file = getFS().open(fullPath, "r");
+    if (!file) {
+        return 0;
+    }
+
+    // Read header
     ArchiveHeader header;
-    if (!readHeader(path, header)) {
+    size_t headerRead = file.read((uint8_t*)&header, sizeof(ArchiveHeader));
+    if (headerRead != sizeof(ArchiveHeader) || header.magic != ARCHIVE_MAGIC) {
+        file.close();
         return 0;
     }
 
@@ -210,6 +262,7 @@ static int loadMessages(const char* path, ArchivedMessage* buffer, int maxCount)
                     header.messageCount : maxCount;
 
     if (loadCount == 0) {
+        file.close();
         return 0;
     }
 
@@ -219,25 +272,21 @@ static int loadMessages(const char* path, ArchivedMessage* buffer, int maxCount)
         skipCount = header.messageCount - maxCount;
     }
 
-    // Read entire file
-    size_t fileSize = Storage::getFileSize(path);
-    uint8_t* fileData = new uint8_t[fileSize];
-    if (!fileData) {
-        Serial.println("[ARCHIVE] Out of memory for load");
-        return 0;
-    }
-
-    size_t bytesRead = 0;
-    if (!Storage::readFile(path, fileData, fileSize, &bytesRead)) {
-        delete[] fileData;
-        return 0;
-    }
-
-    // Copy messages (skip header and older messages)
+    // Seek to first message to load (skip header and older messages)
     size_t offset = sizeof(ArchiveHeader) + (skipCount * sizeof(ArchivedMessage));
-    memcpy(buffer, fileData + offset, loadCount * sizeof(ArchivedMessage));
+    file.seek(offset, SeekSet);
 
-    delete[] fileData;
+    // Stream messages directly into output buffer (NO heap allocation)
+    size_t bytesToRead = loadCount * sizeof(ArchivedMessage);
+    size_t bytesRead = file.read((uint8_t*)buffer, bytesToRead);
+
+    file.close();
+
+    if (bytesRead != bytesToRead) {
+        Serial.printf("[ARCHIVE] Incomplete read from %s: %d/%d bytes\n",
+                      path, bytesRead, bytesToRead);
+        return bytesRead / sizeof(ArchivedMessage);  // Return partial load
+    }
 
     Serial.printf("[ARCHIVE] Loaded %d messages from %s\n", loadCount, path);
     return loadCount;
