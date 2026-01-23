@@ -332,30 +332,69 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 // =============================================================================
 
 void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
+    // DIAGNOSTIC: Step-by-step logging to identify crash location
+    Serial.println("[SLEEP] Step 1: Disabling watchdog");
+    Serial.flush();
+
     // Disable watchdog before sleep to prevent timeout during sleep cycles
     esp_task_wdt_delete(NULL);
 
+    Serial.println("[SLEEP] Step 2: Shutting down keyboard backlight");
+    Serial.flush();
+
     // Shutdown peripherals before sleep to save power (~20-50mA → ~2-5mA)
-    Serial.println("[POWER] Shutting down peripherals for sleep");
     Keyboard::setBacklight(false);   // Turn off keyboard backlight (~5mA)
+
+    Serial.println("[SLEEP] Step 3: Shutting down display backlight");
+    Serial.flush();
+
     Display::backlightOff();         // Turn off display backlight (~10-15mA)
+
+    Serial.println("[SLEEP] Step 4: Ending I2C bus");
+    Serial.flush();
 
     // Suspend I2C bus (keyboard, touchscreen) - saves ~5-10mA
     Wire.end();
-    Serial.flush();  // Ensure all serial output is sent before sleep
+
+    Serial.println("[SLEEP] Step 5: Waiting for peripherals to settle");
+    Serial.flush();
     delay(10);  // Give peripherals time to settle
+
+    Serial.println("[SLEEP] Step 6: Resetting strapping pin GPIO 0");
+    Serial.flush();
 
     // CRITICAL: Reset strapping pins BEFORE sleep to prevent corruption
     // GPIO 0 (trackball click) and GPIO 1 (trackball left) are ESP32-S3 strapping pins
     // If they're held LOW during reset, device enters DOWNLOAD mode → boot loop
     gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
+
+    Serial.println("[SLEEP] Step 7: Resetting strapping pin GPIO 1");
+    Serial.flush();
+
     gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
+
+    Serial.println("[SLEEP] Step 8: Reconfiguring GPIO 0 as INPUT_PULLUP");
+    Serial.flush();
+
     pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
+
+    Serial.println("[SLEEP] Step 9: Reconfiguring GPIO 1 as INPUT_PULLUP");
+    Serial.flush();
+
     pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
+
+    Serial.println("[SLEEP] Step 10: Waiting for GPIO stabilization");
+    Serial.flush();
     delay(10);  // Stabilization time for GPIO state
+
+    Serial.println("[SLEEP] Step 11: Enabling GPIO wakeup system");
+    Serial.flush();
 
     // Enable GPIO wakeup system
     esp_sleep_enable_gpio_wakeup();
+
+    Serial.println("[SLEEP] Step 12: Configuring LoRa wakeup (if enabled)");
+    Serial.flush();
 
     // LoRa wake - DIO1 goes HIGH when packet received
     // GPIO 45 is NOT a strapping pin, safe to use
@@ -363,23 +402,42 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
     }
 
+    Serial.println("[SLEEP] Step 13: Enabling timer wakeup");
+    Serial.flush();
+
     // Timer wake
     if (timerSecs > 0) {
         esp_sleep_enable_timer_wakeup((uint64_t)timerSecs * 1000000ULL);
     }
 
-    // Enter light sleep
-    noInterrupts();
+    Serial.println("[SLEEP] Step 14: Resetting watchdog before sleep");
+    Serial.flush();
+    esp_task_wdt_reset();
+
+    Serial.println("[SLEEP] Step 15: Entering light sleep NOW (ESP-IDF handles interrupts)");
+    Serial.flush();
+    delay(50);  // Ensure Serial buffer fully flushed
+
+    // Enter light sleep - let ESP-IDF handle interrupt management
+    // FIXED: Removed noInterrupts()/interrupts() calls which conflicted with LoRa radio
     esp_light_sleep_start();
+
+    Serial.println("[SLEEP] Step 16: WOKE FROM SLEEP");
+    Serial.flush();
 
     // Disable wake sources
     if (wakeOnLoRa) {
         gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
     }
-    interrupts();
+
+    Serial.println("[SLEEP] Step 17: Checking wake cause");
+    Serial.flush();
 
     // Get wake cause for logging
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    Serial.printf("[SLEEP] Wake cause: %d\n", cause);
+    Serial.flush();
+
     if (cause == ESP_SLEEP_WAKEUP_GPIO) {
         // Longer delay to let radio/interrupt stabilize after GPIO wake
         delay(50);
@@ -387,7 +445,13 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         delay(10);  // Brief delay for other wake sources
     }
 
+    Serial.println("[SLEEP] Step 18: Disabling wake sources");
+    Serial.flush();
+
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    Serial.println("[SLEEP] Step 19: Resetting strapping pins after wake");
+    Serial.flush();
 
     // Reset strapping pin GPIOs after wake (defensive redundancy)
     // Already reset before sleep, but reset again after wake for extra safety
@@ -396,17 +460,37 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
     pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
 
+    Serial.println("[SLEEP] Step 20: Restoring I2C bus");
+    Serial.flush();
+
     // Restore peripherals after wake
-    Serial.println("[POWER] Restoring peripherals after wake");
     delay(50);  // Stabilization time for peripherals
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);  // Restart I2C bus
+
+    Serial.println("[SLEEP] Step 21: Re-initializing keyboard");
+    Serial.flush();
+
     Keyboard::init();                    // Re-initialize keyboard
+
+    Serial.println("[SLEEP] Step 22: Turning on display backlight");
+    Serial.flush();
+
     Display::backlightOn();              // Turn on display backlight
+
+    Serial.println("[SLEEP] Step 23: Turning on keyboard backlight");
+    Serial.flush();
+
     Keyboard::setBacklight(true);        // Turn on keyboard backlight
+
+    Serial.println("[SLEEP] Step 24: Re-adding watchdog and resetting");
+    Serial.flush();
 
     // Re-add task to watchdog and reset it after wake
     esp_task_wdt_add(NULL);
     esp_task_wdt_reset();
+
+    Serial.println("[SLEEP] Step 25: SLEEP CYCLE COMPLETE - FIX APPLIED");
+    Serial.flush();
 }
 
 } // namespace Power
