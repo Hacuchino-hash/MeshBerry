@@ -356,9 +356,9 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     // Suspend I2C bus (keyboard, touchscreen) - saves ~5-10mA
     Wire.end();
 
-    Serial.println("[SLEEP] Step 5: Waiting for peripherals to settle");
+    Serial.println("[SLEEP] Step 5: Waiting for I2C bus shutdown (Meshtastic pattern)");
     Serial.flush();
-    delay(10);  // Give peripherals time to settle
+    delay(50);  // CRITICAL: Wait for I2C bus to fully shut down (Meshtastic uses 50ms)
 
     Serial.println("[SLEEP] Step 6: Resetting strapping pin GPIO 0");
     Serial.flush();
@@ -410,17 +410,38 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         esp_sleep_enable_timer_wakeup((uint64_t)timerSecs * 1000000ULL);
     }
 
-    Serial.println("[SLEEP] Step 14: Resetting watchdog before sleep");
+    Serial.println("[SLEEP] Step 14: Waiting for peripherals to settle");
     Serial.flush();
-    esp_task_wdt_reset();
+    delay(100);  // CRITICAL: Ensure all peripherals fully settled (especially after message send)
 
-    Serial.println("[SLEEP] Step 15: Entering light sleep NOW (ESP-IDF handles interrupts)");
+    Serial.println("[SLEEP] Step 15: Entering light sleep NOW");
     Serial.flush();
     delay(50);  // Ensure Serial buffer fully flushed
 
     // Enter light sleep - let ESP-IDF handle interrupt management
-    // FIXED: Removed noInterrupts()/interrupts() calls which conflicted with LoRa radio
-    esp_light_sleep_start();
+    // FIXED: Removed noInterrupts()/interrupts() which conflicted with LoRa radio
+    esp_err_t sleepResult = esp_light_sleep_start();
+
+    // Check if sleep succeeded
+    if (sleepResult != ESP_OK) {
+        Serial.printf("[SLEEP] ERROR: Sleep entry failed with code %d\n", sleepResult);
+        Serial.flush();
+
+        // Re-add watchdog before returning (it was deleted at Step 1)
+        esp_task_wdt_add(NULL);
+        esp_task_wdt_reset();
+
+        // Restore peripherals before returning
+        delay(50);
+        Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);
+        delay(100);
+        Keyboard::init();
+        Display::backlightOn();
+        Keyboard::setBacklight(true);
+
+        Serial.println("[SLEEP] Sleep failed - peripherals restored");
+        return;  // Exit without completing sleep
+    }
 
     Serial.println("[SLEEP] Step 16: WOKE FROM SLEEP");
     Serial.flush();
