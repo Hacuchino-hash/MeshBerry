@@ -356,44 +356,25 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     // Suspend I2C bus (keyboard, touchscreen) - saves ~5-10mA
     Wire.end();
 
-    Serial.println("[SLEEP] Step 5: Waiting for I2C bus shutdown (Meshtastic pattern)");
+    Serial.println("[SLEEP] Step 5: Setting I2C pins to ANALOG (Meshtastic pattern)");
     Serial.flush();
-    delay(50);  // CRITICAL: Wait for I2C bus to fully shut down (Meshtastic uses 50ms)
+    // CRITICAL: Meshtastic sets I2C pins to ANALOG mode after Wire.end()
+    // This prevents pullup current draw during sleep
+    pinMode(PIN_KB_SDA, ANALOG);
+    pinMode(PIN_KB_SCL, ANALOG);
 
-    Serial.println("[SLEEP] Step 6: Resetting strapping pin GPIO 0");
+    Serial.println("[SLEEP] Step 6: Configuring RTC power domain");
     Serial.flush();
+    // CRITICAL: Keep RTC peripherals powered during sleep (Meshtastic pattern)
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    // CRITICAL: Reset strapping pins BEFORE sleep to prevent corruption
-    // GPIO 0 (trackball click) and GPIO 1 (trackball left) are ESP32-S3 strapping pins
-    // If they're held LOW during reset, device enters DOWNLOAD mode → boot loop
-    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
-
-    Serial.println("[SLEEP] Step 7: Resetting strapping pin GPIO 1");
+    Serial.println("[SLEEP] Step 7: Enabling GPIO wakeup system");
     Serial.flush();
-
-    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
-
-    Serial.println("[SLEEP] Step 8: Reconfiguring GPIO 0 as INPUT_PULLUP");
-    Serial.flush();
-
-    pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
-
-    Serial.println("[SLEEP] Step 9: Reconfiguring GPIO 1 as INPUT_PULLUP");
-    Serial.flush();
-
-    pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
-
-    Serial.println("[SLEEP] Step 10: Waiting for GPIO stabilization");
-    Serial.flush();
-    delay(10);  // Stabilization time for GPIO state
-
-    Serial.println("[SLEEP] Step 11: Enabling GPIO wakeup system");
-    Serial.flush();
-
     // Enable GPIO wakeup system
+    // NOTE: We do NOT manipulate GPIO 0/1 (strapping pins) - they stay INPUT_PULLUP from boot
     esp_sleep_enable_gpio_wakeup();
 
-    Serial.println("[SLEEP] Step 12: Configuring LoRa wakeup (if enabled)");
+    Serial.println("[SLEEP] Step 8: Configuring LoRa wakeup (if enabled)");
     Serial.flush();
 
     // LoRa wake - DIO1 goes HIGH when packet received
@@ -402,7 +383,7 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
     }
 
-    Serial.println("[SLEEP] Step 13: Enabling timer wakeup");
+    Serial.println("[SLEEP] Step 9: Enabling timer wakeup");
     Serial.flush();
 
     // Timer wake
@@ -410,13 +391,13 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         esp_sleep_enable_timer_wakeup((uint64_t)timerSecs * 1000000ULL);
     }
 
-    Serial.println("[SLEEP] Step 14: Waiting for peripherals to settle");
+    Serial.println("[SLEEP] Step 10: Waiting for all peripherals to fully settle");
     Serial.flush();
-    delay(100);  // CRITICAL: Ensure all peripherals fully settled (especially after message send)
+    delay(200);  // CRITICAL: Longer delay to ensure everything settled (Meshtastic uses 50-100ms)
 
-    Serial.println("[SLEEP] Step 15: Entering light sleep NOW");
+    Serial.println("[SLEEP] Step 11: Entering light sleep NOW");
     Serial.flush();
-    delay(50);  // Ensure Serial buffer fully flushed
+    delay(100);  // Ensure Serial buffer fully flushed
 
     // Enter light sleep - let ESP-IDF handle interrupt management
     // FIXED: Removed noInterrupts()/interrupts() which conflicted with LoRa radio
@@ -443,7 +424,7 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         return;  // Exit without completing sleep
     }
 
-    Serial.println("[SLEEP] Step 16: WOKE FROM SLEEP");
+    Serial.println("[SLEEP] Step 12: WOKE FROM SLEEP");
     Serial.flush();
 
     // Disable wake sources
@@ -451,7 +432,7 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
     }
 
-    Serial.println("[SLEEP] Step 17: Checking wake cause");
+    Serial.println("[SLEEP] Step 13: Checking wake cause");
     Serial.flush();
 
     // Get wake cause for logging
@@ -466,51 +447,41 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         delay(10);  // Brief delay for other wake sources
     }
 
-    Serial.println("[SLEEP] Step 18: Disabling wake sources");
+    Serial.println("[SLEEP] Step 14: Disabling wake sources");
     Serial.flush();
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    Serial.println("[SLEEP] Step 19: Resetting strapping pins after wake");
-    Serial.flush();
-
-    // Reset strapping pin GPIOs after wake (defensive redundancy)
-    // Already reset before sleep, but reset again after wake for extra safety
-    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_CLICK);
-    gpio_reset_pin((gpio_num_t)PIN_TRACKBALL_LEFT);
-    pinMode(PIN_TRACKBALL_CLICK, INPUT_PULLUP);
-    pinMode(PIN_TRACKBALL_LEFT, INPUT_PULLUP);
-
-    Serial.println("[SLEEP] Step 20: Restoring I2C bus");
+    Serial.println("[SLEEP] Step 15: Restoring I2C bus");
     Serial.flush();
 
     // Restore peripherals after wake
     delay(50);  // Stabilization time for peripherals
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);  // Restart I2C bus
 
-    Serial.println("[SLEEP] Step 21: Re-initializing keyboard");
+    Serial.println("[SLEEP] Step 16: Re-initializing keyboard");
     Serial.flush();
 
     Keyboard::init();                    // Re-initialize keyboard
 
-    Serial.println("[SLEEP] Step 22: Turning on display backlight");
+    Serial.println("[SLEEP] Step 17: Turning on display backlight");
     Serial.flush();
 
     Display::backlightOn();              // Turn on display backlight
 
-    Serial.println("[SLEEP] Step 23: Turning on keyboard backlight");
+    Serial.println("[SLEEP] Step 18: Turning on keyboard backlight");
     Serial.flush();
 
     Keyboard::setBacklight(true);        // Turn on keyboard backlight
 
-    Serial.println("[SLEEP] Step 24: Re-adding watchdog and resetting");
+    Serial.println("[SLEEP] Step 19: Re-adding watchdog and resetting");
     Serial.flush();
 
     // Re-add task to watchdog and reset it after wake
     esp_task_wdt_add(NULL);
     esp_task_wdt_reset();
 
-    Serial.println("[SLEEP] Step 25: SLEEP CYCLE COMPLETE - FIX APPLIED");
+    Serial.println("[SLEEP] Step 20: SLEEP CYCLE COMPLETE");
     Serial.flush();
 }
 
