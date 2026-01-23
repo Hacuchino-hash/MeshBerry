@@ -1,0 +1,400 @@
+diff --git a/src/graphics/niche/InkHUD/Applets/System/Menu/MenuApplet.cpp b/src/graphics/niche/InkHUD/Applets/System/Menu/MenuApplet.cpp
+index 7e70938..6db1b8a 100644
+--- a/src/graphics/niche/InkHUD/Applets/System/Menu/MenuApplet.cpp
++++ b/src/graphics/niche/InkHUD/Applets/System/Menu/MenuApplet.cpp
+@@ -845,6 +845,10 @@ uint16_t InkHUD::MenuApplet::getSystemInfoPanelHeight()
+ // Used to send our canned messages
+ void InkHUD::MenuApplet::sendText(NodeNum dest, ChannelIndex channel, const char *message)
+ {
++#ifdef USE_MESHCORE
++    LOG_INFO("InkHUD sendText unavailable - MeshCore mode");
++    return;  // MeshCore handles routing - router is NULL
++#endif
+     meshtastic_MeshPacket *p = router->allocForSending();
+     p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+     p->to = dest;
+diff --git a/src/main.cpp b/src/main.cpp
+index c1096a2..68ee6be 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -8,6 +8,11 @@
+ #include "PowerFSM.h"
+ #include "PowerMon.h"
+ #include "ReliableRouter.h"
++
++// MeshCore integration - replaces Meshtastic's Router with MeshCore mesh stack
++#ifdef USE_MESHCORE
++#include "mesh/MeshCoreAdapter.h"
++#endif
+ #include "airtime.h"
+ #include "buzz.h"
+ 
+@@ -851,7 +856,10 @@ void setup()
+     }
+ #endif
+ 
++// Note: When USE_MESHCORE is defined, router init happens later after RadioLibHAL is created
++#ifndef USE_MESHCORE
+     router = new ReliableRouter();
++#endif
+ 
+     // only play start melody when role is not tracker or sensor
+     if (config.power.is_power_saving == true &&
+@@ -1313,6 +1321,13 @@ void setup()
+     LockingArduinoHal *RadioLibHAL = new LockingArduinoHal(SPI, spiSettings);
+ #endif
+ 
++#ifdef USE_MESHCORE
++    // Initialize MeshCore with Meshtastic's LockingArduinoHal for SPI mutex protection
++    // This ensures the radio and display can safely share the SPI bus
++    if (!initMeshCore(RadioLibHAL)) {
++        LOG_ERROR("MeshCore: Init failed\n");
++    }
++#else
+     // radio init MUST BE AFTER service.init, so we have our radio config settings (from nodedb init)
+ #if defined(USE_STM32WLx)
+     if (!rIf) {
+@@ -1565,6 +1580,7 @@ void setup()
+                                                     (float(rIf->getPacketTime(meshtastic_Constants_DATA_PAYLOAD_LEN)))) *
+                                                        1000);
+     }
++#endif // USE_MESHCORE
+ 
+     // This must be _after_ service.init because we need our preferences loaded from flash to have proper timeout values
+     PowerFSM_setup(); // we will transition to ON in a couple of seconds, FIXME, only do this for cold boots, not waking from SDS
+@@ -1687,7 +1703,12 @@ void loop()
+     }
+ #endif
+ 
++// Note: When USE_MESHCORE is defined, meshCoreAdapter->loop() runs in its own
++// FreeRTOS task (meshCoreTaskHandler) with spiLock protection. Don't call it here.
++// Also skip service->loop() as MeshService requires router which is NULL with MeshCore.
++#ifndef USE_MESHCORE
+     service->loop();
++#endif
+ #if !MESHTASTIC_EXCLUDE_INPUTBROKER && defined(HAS_FREE_RTOS) && !defined(ARCH_RP2040)
+     if (inputBroker)
+         inputBroker->processInputEventQueue();
+diff --git a/src/mesh/MeshModule.cpp b/src/mesh/MeshModule.cpp
+index 83b64a8..2ab659d 100644
+--- a/src/mesh/MeshModule.cpp
++++ b/src/mesh/MeshModule.cpp
+@@ -48,6 +48,9 @@ int32_t MeshModule::setStartDelay()
+ meshtastic_MeshPacket *MeshModule::allocAckNak(meshtastic_Routing_Error err, NodeNum to, PacketId idFrom, ChannelIndex chIndex,
+                                                uint8_t hopLimit)
+ {
++#ifdef USE_MESHCORE
++    return nullptr;  // MeshCore handles ACK/NAK - router is NULL
++#endif
+     meshtastic_Routing c = meshtastic_Routing_init_default;
+ 
+     c.error_reason = err;
+@@ -75,6 +78,9 @@ meshtastic_MeshPacket *MeshModule::allocAckNak(meshtastic_Routing_Error err, Nod
+ 
+ meshtastic_MeshPacket *MeshModule::allocErrorResponse(meshtastic_Routing_Error err, const meshtastic_MeshPacket *p)
+ {
++#ifdef USE_MESHCORE
++    return nullptr;  // MeshCore handles error responses - router is NULL
++#endif
+     // If the original packet couldn't be decoded, use the primary channel
+     uint8_t channelIndex =
+         p->which_payload_variant == meshtastic_MeshPacket_decoded_tag ? p->channel : channels.getPrimaryIndex();
+diff --git a/src/mesh/MeshService.cpp b/src/mesh/MeshService.cpp
+index c1b3839..a71fba3 100644
+--- a/src/mesh/MeshService.cpp
++++ b/src/mesh/MeshService.cpp
+@@ -116,6 +116,9 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
+ /// Do idle processing (mostly processing messages which have been queued from the radio)
+ void MeshService::loop()
+ {
++#ifdef USE_MESHCORE
++    return; // MeshCore handles all mesh routing - router is NULL
++#endif
+     if (lastQueueStatus.free == 0) { // check if there is now free space in TX queue
+         meshtastic_QueueStatus qs = router->getQueueStatus();
+         if (qs.free != lastQueueStatus.free)
+@@ -217,6 +220,9 @@ void MeshService::handleToRadio(meshtastic_MeshPacket &p)
+ /** Attempt to cancel a previously sent packet from this _local_ node.  Returns true if a packet was found we could cancel */
+ bool MeshService::cancelSending(PacketId id)
+ {
++#ifdef USE_MESHCORE
++    return false; // MeshCore handles routing - router is NULL
++#endif
+     return router->cancelSending(nodeDB->getNodeNum(), id);
+ }
+ 
+@@ -244,6 +250,11 @@ ErrorCode MeshService::sendQueueStatusToPhone(const meshtastic_QueueStatus &qs,
+ 
+ void MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPhone)
+ {
++#ifdef USE_MESHCORE
++    // MeshCore handles all routing - don't use Meshtastic's router
++    packetPool.release(p);
++    return;
++#endif
+     uint32_t mesh_packet_id = p->id;
+     nodeDB->updateFrom(*p); // update our local DB for this packet (because phone might have sent position packets etc...)
+ 
+diff --git a/src/mesh/PhoneAPI.cpp b/src/mesh/PhoneAPI.cpp
+index 9050ee8..fc0de30 100644
+--- a/src/mesh/PhoneAPI.cpp
++++ b/src/mesh/PhoneAPI.cpp
+@@ -227,7 +227,11 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
+     if (heartbeatReceived) {
+         memset(&fromRadioScratch, 0, sizeof(fromRadioScratch));
+         fromRadioScratch.which_payload_variant = meshtastic_FromRadio_queueStatus_tag;
+-        fromRadioScratch.queueStatus = router->getQueueStatus();
++        if (router) {
++            fromRadioScratch.queueStatus = router->getQueueStatus();
++        } else {
++            memset(&fromRadioScratch.queueStatus, 0, sizeof(fromRadioScratch.queueStatus));
++        }
+         heartbeatReceived = false;
+         size_t numbytes = pb_encode_to_bytes(buf, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratch);
+         LOG_DEBUG("FromRadio=STATE_SEND_QUEUE_STATUS, numbytes=%u", numbytes);
+@@ -787,12 +791,14 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
+         Throttle::isWithinTimespanMs(lastPortNumToRadio[p.decoded.portnum], THIRTY_SECONDS_MS)) {
+         LOG_WARN("Rate limit portnum %d", p.decoded.portnum);
+         sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "TraceRoute can only be sent once every 30 seconds");
+-        meshtastic_QueueStatus qs = router->getQueueStatus();
++        meshtastic_QueueStatus qs = {};
++        if (router) qs = router->getQueueStatus();
+         service->sendQueueStatusToPhone(qs, 0, p.id);
+         return false;
+     } else if (p.decoded.portnum == meshtastic_PortNum_TRACEROUTE_APP && isBroadcast(p.to) && p.hop_limit > 0) {
+         sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "Multi-hop traceroute to broadcast address is not allowed");
+-        meshtastic_QueueStatus qs = router->getQueueStatus();
++        meshtastic_QueueStatus qs = {};
++        if (router) qs = router->getQueueStatus();
+         service->sendQueueStatusToPhone(qs, 0, p.id);
+         return false;
+     } else if (IS_ONE_OF(p.decoded.portnum, meshtastic_PortNum_POSITION_APP, meshtastic_PortNum_WAYPOINT_APP,
+@@ -801,7 +807,8 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
+                Throttle::isWithinTimespanMs(lastPortNumToRadio[p.decoded.portnum], TEN_SECONDS_MS)) {
+         // TODO: [Issue #6700] Make this rate limit throttling scale up / down with the preset
+         LOG_WARN("Rate limit portnum %d", p.decoded.portnum);
+-        meshtastic_QueueStatus qs = router->getQueueStatus();
++        meshtastic_QueueStatus qs = {};
++        if (router) qs = router->getQueueStatus();
+         service->sendQueueStatusToPhone(qs, 0, p.id);
+         // FIXME: Figure out why this continues to happen
+         // sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "Position can only be sent once every 5 seconds");
+@@ -809,7 +816,8 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
+     } else if (p.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && lastPortNumToRadio[p.decoded.portnum] &&
+                Throttle::isWithinTimespanMs(lastPortNumToRadio[p.decoded.portnum], TWO_SECONDS_MS)) {
+         LOG_WARN("Rate limit portnum %d", p.decoded.portnum);
+-        meshtastic_QueueStatus qs = router->getQueueStatus();
++        meshtastic_QueueStatus qs = {};
++        if (router) qs = router->getQueueStatus();
+         service->sendQueueStatusToPhone(qs, 0, p.id);
+         service->sendRoutingErrorResponse(meshtastic_Routing_Error_RATE_LIMIT_EXCEEDED, &p);
+         // sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "Text messages can only be sent once every 2 seconds");
+diff --git a/src/mesh/ProtobufModule.h b/src/mesh/ProtobufModule.h
+index 725477e..74d82b7 100644
+--- a/src/mesh/ProtobufModule.h
++++ b/src/mesh/ProtobufModule.h
+@@ -42,6 +42,9 @@ template <class T> class ProtobufModule : protected SinglePortModule
+      */
+     meshtastic_MeshPacket *allocDataProtobuf(const T &payload)
+     {
++#ifdef USE_MESHCORE
++        return nullptr;  // MeshCore handles packet allocation - Meshtastic modules don't send
++#endif
+         // Update our local node info with our position (even if we don't decide to update anyone else)
+         meshtastic_MeshPacket *p = allocDataPacket();
+ 
+diff --git a/src/mesh/SinglePortModule.h b/src/mesh/SinglePortModule.h
+index e43de09..0ba08b5 100644
+--- a/src/mesh/SinglePortModule.h
++++ b/src/mesh/SinglePortModule.h
+@@ -30,6 +30,9 @@ class SinglePortModule : public MeshModule
+      */
+     meshtastic_MeshPacket *allocDataPacket()
+     {
++#ifdef USE_MESHCORE
++        return nullptr;  // MeshCore handles packet allocation - router is NULL
++#endif
+         // Update our local node info with our position (even if we don't decide to update anyone else)
+         meshtastic_MeshPacket *p = router->allocForSending();
+         p->decoded.portnum = ourPortNum;
+diff --git a/src/modules/RoutingModule.cpp b/src/modules/RoutingModule.cpp
+index e9e1fc7..8908f60 100644
+--- a/src/modules/RoutingModule.cpp
++++ b/src/modules/RoutingModule.cpp
+@@ -28,7 +28,9 @@ bool RoutingModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mesh
+     }
+ 
+     printPacket("Routing sniffing", &mp);
++#ifndef USE_MESHCORE
+     router->sniffReceived(&mp, r);
++#endif
+ 
+     // FIXME - move this to a non promsicious PhoneAPI module?
+     // Note: we are careful not to send back packets that started with the phone back to the phone
+@@ -51,6 +53,9 @@ void RoutingModule::sendAckNak(meshtastic_Routing_Error err, NodeNum to, PacketI
+                                bool ackWantsAck)
+ {
+     auto p = allocAckNak(err, to, idFrom, chIndex, hopLimit);
++    if (!p) {
++        return;  // MeshCore handles routing - packet allocation returned null
++    }
+ 
+     // Allow the caller to set want_ack on this ACK packet if it's important that the ACK be delivered reliably
+     p->want_ack = ackWantsAck;
+diff --git a/src/modules/SerialModule.cpp b/src/modules/SerialModule.cpp
+index 5699f3b..f2cb754 100644
+--- a/src/modules/SerialModule.cpp
++++ b/src/modules/SerialModule.cpp
+@@ -315,6 +315,9 @@ int32_t SerialModule::runOnce()
+  */
+ void SerialModule::sendTelemetry(meshtastic_Telemetry m)
+ {
++#ifdef USE_MESHCORE
++    return;  // MeshCore handles routing - router is NULL
++#endif
+     meshtastic_MeshPacket *p = router->allocForSending();
+     p->decoded.portnum = meshtastic_PortNum_TELEMETRY_APP;
+     p->decoded.payload.size =
+diff --git a/src/modules/SerialModule.h b/src/modules/SerialModule.h
+index dbe4f75..d6c0cf9 100644
+--- a/src/modules/SerialModule.h
++++ b/src/modules/SerialModule.h
+@@ -69,6 +69,9 @@ class SerialModuleRadio : public MeshModule
+ 
+     meshtastic_MeshPacket *allocDataPacket()
+     {
++#ifdef USE_MESHCORE
++        return nullptr;  // MeshCore handles packet allocation - router is NULL
++#endif
+         // Update our local node info with our position (even if we don't decide to update anyone else)
+         meshtastic_MeshPacket *p = router->allocForSending();
+         p->decoded.portnum = ourPortNum;
+diff --git a/src/modules/TraceRouteModule.cpp b/src/modules/TraceRouteModule.cpp
+index 41dc02c..ded811d 100644
+--- a/src/modules/TraceRouteModule.cpp
++++ b/src/modules/TraceRouteModule.cpp
+@@ -508,6 +508,10 @@ const char *TraceRouteModule::getNodeName(NodeNum node)
+ 
+ bool TraceRouteModule::startTraceRoute(NodeNum node)
+ {
++#ifdef USE_MESHCORE
++    LOG_INFO("TraceRoute unavailable - MeshCore mode");
++    return false;  // MeshCore handles routing - router is NULL
++#endif
+     LOG_INFO("=== TraceRoute startTraceRoute CALLED: node=0x%08x ===", node);
+     unsigned long now = millis();
+ 
+@@ -641,6 +645,10 @@ bool TraceRouteModule::startTraceRoute(NodeNum node)
+ 
+ void TraceRouteModule::launch(NodeNum node)
+ {
++#ifdef USE_MESHCORE
++    LOG_INFO("TraceRoute launch unavailable - MeshCore mode");
++    return;  // MeshCore handles routing - router is NULL
++#endif
+     if (node == 0 || node == NODENUM_BROADCAST) {
+         LOG_ERROR("Invalid node number for trace route: 0x%08x", node);
+         runState = TRACEROUTE_STATE_RESULT;
+diff --git a/src/mqtt/MQTT.cpp b/src/mqtt/MQTT.cpp
+index 4c2c0fe..5587b2c 100644
+--- a/src/mqtt/MQTT.cpp
++++ b/src/mqtt/MQTT.cpp
+@@ -88,9 +88,13 @@ inline void onReceiveProto(char *topic, byte *payload, size_t length)
+         // We do this because packets are not rebroadcasted back into MQTT anymore and we assume that at least one node
+         // receives it when we get our own packet back. Then we'll stop our retransmissions.
+         if (isFromUs(e.packet)) {
++#ifndef USE_MESHCORE
+             auto pAck = routingModule->allocAckNak(meshtastic_Routing_Error_NONE, getFrom(e.packet), e.packet->id, ch.index);
+-            pAck->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MQTT;
+-            router->sendLocal(pAck);
++            if (pAck) {
++                pAck->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MQTT;
++                router->sendLocal(pAck);
++            }
++#endif
+         } else {
+             LOG_INFO("Ignore downlink message we originally sent");
+         }
+@@ -181,6 +185,10 @@ inline void onReceiveJson(byte *payload, size_t length)
+ 
+     // this is a valid envelope
+     if (json["type"]->AsString().compare("sendtext") == 0 && json["payload"]->IsString()) {
++#ifdef USE_MESHCORE
++        LOG_INFO("MQTT sendtext unavailable - MeshCore mode");
++        return;
++#endif
+         std::string jsonPayloadStr = json["payload"]->AsString();
+         LOG_INFO("JSON payload %s, length %u", jsonPayloadStr.c_str(), jsonPayloadStr.length());
+ 
+@@ -202,6 +210,10 @@ inline void onReceiveJson(byte *payload, size_t length)
+             LOG_WARN("Received MQTT json payload too long, drop");
+         }
+     } else if (json["type"]->AsString().compare("sendposition") == 0 && json["payload"]->IsObject()) {
++#ifdef USE_MESHCORE
++        LOG_INFO("MQTT sendposition unavailable - MeshCore mode");
++        return;
++#endif
+         // invent the "sendposition" type for a valid envelope
+         JSONObject posit;
+         posit = json["payload"]->AsObject(); // get nested JSON Position
+diff --git a/src/platform/portduino/SimRadio.cpp b/src/platform/portduino/SimRadio.cpp
+index 6e7fe24..3f0211d 100644
+--- a/src/platform/portduino/SimRadio.cpp
++++ b/src/platform/portduino/SimRadio.cpp
+@@ -223,7 +223,9 @@ void SimRadio::startSend(meshtastic_MeshPacket *txp)
+         pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_Compressed_msg, &c);
+     p->decoded.portnum = meshtastic_PortNum_SIMULATOR_APP;
+ 
+-    service->sendQueueStatusToPhone(router->getQueueStatus(), 0, p->id);
++    meshtastic_QueueStatus qs = {};
++    if (router) qs = router->getQueueStatus();
++    service->sendQueueStatusToPhone(qs, 0, p->id);
+     service->sendToPhone(p); // Sending back to simulator
+     service->loop();         // Process the send immediately
+ }
+diff --git a/variants/esp32s3/t-deck/platformio.ini b/variants/esp32s3/t-deck/platformio.ini
+index 5833579..4958597 100644
+--- a/variants/esp32s3/t-deck/platformio.ini
++++ b/variants/esp32s3/t-deck/platformio.ini
+@@ -17,10 +17,27 @@ board_check = true
+ board_build.partitions = default_16MB.csv
+ upload_protocol = esptool
+ 
+-build_flags = ${esp32s3_base.build_flags} 
+-  -D T_DECK 
++build_flags = ${esp32s3_base.build_flags}
++  -D T_DECK
+   -D BOARD_HAS_PSRAM
+   -I variants/esp32s3/t-deck
++  ; ed25519 include path (library is in lib/ed25519/)
++  -I lib/ed25519
++  ; Enable MeshCore mesh stack (replaces Meshtastic router)
++  -D USE_MESHCORE
++  ; MeshCore LoRa pin definitions for T-Deck (literal values from variant.h)
++  -D P_LORA_SCLK=40
++  -D P_LORA_MISO=38
++  -D P_LORA_MOSI=41
++  -D P_LORA_NSS=9
++  -D P_LORA_DIO_1=45
++  -D P_LORA_RESET=17
++  -D P_LORA_BUSY=13
++  ; MeshCore LoRa radio parameters (US region)
++  -D LORA_FREQ=910.525
++  -D LORA_BW=62.5
++  -D LORA_SF=10
++  -D LORA_TX_POWER=22
+ 
+ lib_deps = ${esp32s3_base.lib_deps}
+   # renovate: datasource=custom.pio depName=LovyanGFX packageName=lovyan03/library/LovyanGFX
+@@ -29,6 +46,11 @@ lib_deps = ${esp32s3_base.lib_deps}
+   earlephilhower/ESP8266Audio@1.9.9
+   # renovate: datasource=custom.pio depName=ESP8266SAM packageName=earlephilhower/library/ESP8266SAM
+   earlephilhower/ESP8266SAM@1.1.0
++  # MeshCore dependencies (MeshCore itself is in lib/ directory)
++  # Crypto library for MeshCore (Ed25519, SHA256)
++  rweather/Crypto@^0.4.0
++  # Base64 encoding (required by MeshCore)
++  densaugeo/base64@~1.4.0
+ 
+ [env:t-deck-tft]
+ extends = env:t-deck
