@@ -332,59 +332,36 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 // =============================================================================
 
 void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
-    // DIAGNOSTIC: Step-by-step logging to identify crash location
-    Serial.println("[SLEEP] Step 1: Disabling watchdog");
+    Serial.println("[SLEEP] Entering sleep");
     Serial.flush();
 
     // Disable watchdog before sleep to prevent timeout during sleep cycles
     esp_task_wdt_delete(NULL);
 
-    Serial.println("[SLEEP] Step 2: Shutting down keyboard backlight");
-    Serial.flush();
-
     // Shutdown peripherals before sleep to save power (~20-50mA → ~2-5mA)
     Keyboard::setBacklight(false);   // Turn off keyboard backlight (~5mA)
-
-    Serial.println("[SLEEP] Step 3: Shutting down display backlight");
-    Serial.flush();
-
     Display::backlightOff();         // Turn off display backlight (~10-15mA)
-
-    Serial.println("[SLEEP] Step 4: Ending I2C bus");
-    Serial.flush();
 
     // Suspend I2C bus (keyboard, touchscreen) - saves ~5-10mA
     Wire.end();
 
-    Serial.println("[SLEEP] Step 5: Setting I2C pins to ANALOG (Meshtastic pattern)");
-    Serial.flush();
     // CRITICAL: Meshtastic sets I2C pins to ANALOG mode after Wire.end()
     // This prevents pullup current draw during sleep
     pinMode(PIN_KB_SDA, ANALOG);
     pinMode(PIN_KB_SCL, ANALOG);
 
-    Serial.println("[SLEEP] Step 6: Configuring RTC power domain");
-    Serial.flush();
     // CRITICAL: Keep RTC peripherals powered during sleep (Meshtastic pattern)
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    Serial.println("[SLEEP] Step 7: Enabling GPIO wakeup system");
-    Serial.flush();
     // Enable GPIO wakeup system
     // NOTE: We do NOT manipulate GPIO 0/1 (strapping pins) - they stay INPUT_PULLUP from boot
     esp_sleep_enable_gpio_wakeup();
-
-    Serial.println("[SLEEP] Step 8: Configuring LoRa wakeup (if enabled)");
-    Serial.flush();
 
     // LoRa wake - DIO1 goes HIGH when packet received
     // GPIO 45 is NOT a strapping pin, safe to use
     if (wakeOnLoRa) {
         // CRITICAL: Meshtastic pattern - configure pull resistors first
-        esp_err_t res = gpio_pulldown_en((gpio_num_t)PIN_LORA_DIO1);
-        if (res != ESP_OK) {
-            Serial.printf("[SLEEP] WARNING: DIO1 pulldown failed: %d\n", res);
-        }
+        gpio_pulldown_en((gpio_num_t)PIN_LORA_DIO1);
 
         // Keep CS high (deselected) during sleep - Meshtastic pattern
         pinMode(PIN_LORA_CS, OUTPUT);
@@ -393,24 +370,15 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
 
         // THEN enable wakeup
         gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
-        Serial.printf("[SLEEP] LoRa wake enabled on GPIO %d\n", PIN_LORA_DIO1);
     }
-
-    Serial.println("[SLEEP] Step 9: Enabling timer wakeup");
-    Serial.flush();
 
     // Timer wake
     if (timerSecs > 0) {
         esp_sleep_enable_timer_wakeup((uint64_t)timerSecs * 1000000ULL);
     }
 
-    Serial.println("[SLEEP] Step 10: Waiting for all peripherals to fully settle");
-    Serial.flush();
+    // Wait for peripherals to settle
     delay(200);  // CRITICAL: Longer delay to ensure everything settled (Meshtastic uses 50-100ms)
-
-    Serial.println("[SLEEP] Step 11: Entering light sleep NOW");
-    Serial.flush();
-    delay(100);  // Ensure Serial buffer fully flushed
 
     // Enter light sleep - let ESP-IDF handle interrupt management
     // FIXED: Removed noInterrupts()/interrupts() which conflicted with LoRa radio
@@ -418,10 +386,10 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
 
     // Check if sleep succeeded
     if (sleepResult != ESP_OK) {
-        Serial.printf("[SLEEP] ERROR: Sleep entry failed with code %d\n", sleepResult);
+        Serial.printf("[SLEEP] ERROR: Sleep failed (code %d)\n", sleepResult);
         Serial.flush();
 
-        // Re-add watchdog before returning (it was deleted at Step 1)
+        // Re-add watchdog before returning
         esp_task_wdt_add(NULL);
         esp_task_wdt_reset();
 
@@ -433,12 +401,10 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         Display::backlightOn();
         Keyboard::setBacklight(true);
 
-        Serial.println("[SLEEP] Sleep failed - peripherals restored");
         return;  // Exit without completing sleep
     }
 
-    Serial.println("[SLEEP] Step 12: WOKE FROM SLEEP");
-    Serial.flush();
+    // === WOKE FROM SLEEP ===
 
     // Release GPIO holds (Meshtastic pattern)
     if (wakeOnLoRa) {
@@ -446,13 +412,8 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
     }
 
-    Serial.println("[SLEEP] Step 13: Checking wake cause");
-    Serial.flush();
-
-    // Get wake cause for logging
+    // Get wake cause for timing decisions
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    Serial.printf("[SLEEP] Wake cause: %d\n", cause);
-    Serial.flush();
 
     if (cause == ESP_SLEEP_WAKEUP_GPIO) {
         // Longer delay to let radio/interrupt stabilize after GPIO wake
@@ -461,41 +422,20 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
         delay(10);  // Brief delay for other wake sources
     }
 
-    Serial.println("[SLEEP] Step 14: Disabling wake sources");
-    Serial.flush();
-
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
-    Serial.println("[SLEEP] Step 15: Restoring I2C bus");
-    Serial.flush();
 
     // Restore peripherals after wake
     delay(50);  // Stabilization time for peripherals
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);  // Restart I2C bus
-
-    Serial.println("[SLEEP] Step 16: Re-initializing keyboard");
-    Serial.flush();
-
     Keyboard::init();                    // Re-initialize keyboard
-
-    Serial.println("[SLEEP] Step 17: Turning on display backlight");
-    Serial.flush();
-
     Display::backlightOn();              // Turn on display backlight
-
-    Serial.println("[SLEEP] Step 18: Turning on keyboard backlight");
-    Serial.flush();
-
     Keyboard::setBacklight(true);        // Turn on keyboard backlight
-
-    Serial.println("[SLEEP] Step 19: Re-adding watchdog and resetting");
-    Serial.flush();
 
     // Re-add task to watchdog and reset it after wake
     esp_task_wdt_add(NULL);
     esp_task_wdt_reset();
 
-    Serial.println("[SLEEP] Step 20: SLEEP CYCLE COMPLETE");
+    Serial.println("[SLEEP] Woke from sleep");
     Serial.flush();
 }
 

@@ -215,6 +215,7 @@ uint32_t makeUnixTime(uint16_t year, uint8_t month, uint8_t day,
 void setup() {
     // Initialize serial for debugging
     Serial.begin(115200);
+    Serial.setTimeout(0);  // Never block on Serial writes (prevents watchdog timeout when USB disconnected)
     delay(1000);
 
     // Configure watchdog timer - disable panic on timeout to allow graceful recovery
