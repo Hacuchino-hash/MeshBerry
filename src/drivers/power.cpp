@@ -380,7 +380,20 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     // LoRa wake - DIO1 goes HIGH when packet received
     // GPIO 45 is NOT a strapping pin, safe to use
     if (wakeOnLoRa) {
+        // CRITICAL: Meshtastic pattern - configure pull resistors first
+        esp_err_t res = gpio_pulldown_en((gpio_num_t)PIN_LORA_DIO1);
+        if (res != ESP_OK) {
+            Serial.printf("[SLEEP] WARNING: DIO1 pulldown failed: %d\n", res);
+        }
+
+        // Keep CS high (deselected) during sleep - Meshtastic pattern
+        pinMode(PIN_LORA_CS, OUTPUT);
+        digitalWrite(PIN_LORA_CS, HIGH);
+        gpio_hold_en((gpio_num_t)PIN_LORA_CS);  // HOLD it HIGH during sleep
+
+        // THEN enable wakeup
         gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
+        Serial.printf("[SLEEP] LoRa wake enabled on GPIO %d\n", PIN_LORA_DIO1);
     }
 
     Serial.println("[SLEEP] Step 9: Enabling timer wakeup");
@@ -427,8 +440,9 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     Serial.println("[SLEEP] Step 12: WOKE FROM SLEEP");
     Serial.flush();
 
-    // Disable wake sources
+    // Release GPIO holds (Meshtastic pattern)
     if (wakeOnLoRa) {
+        gpio_hold_dis((gpio_num_t)PIN_LORA_CS);  // Release CS hold
         gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
     }
 
