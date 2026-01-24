@@ -1,0 +1,8 @@
+{
+    "name": "ed25519",
+    "version": "1.0.0",
+    "description": "Ed25519 high-speed public-key signature system",
+    "build": {
+        "srcFilter": ["+<*.c>"]
+    }
+}
