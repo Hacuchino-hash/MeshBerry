@@ -307,6 +307,8 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
             bool trackballPressed = (REG_READ(GPIO_IN_REG) & BIT(PIN_TRACKBALL_CLICK)) == 0;
             if (trackballPressed) {
                 Serial.println("[POWER] Trackball GPIO wake");
+                Display::backlightOn();
+                Keyboard::setBacklight(true);
                 onUserActivity();
                 return;  // Exit sleep loop - instant wake!
             }
@@ -325,6 +327,8 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 
                     if (millis() - lastActivityTime < 1000) {
                         Serial.println("[POWER] User activity during LoRa wake");
+                        Display::backlightOn();
+                        Keyboard::setBacklight(true);
                         return;
                     }
                 }
@@ -335,6 +339,8 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
 
             // Unknown GPIO wake - treat as user activity
             Serial.println("[POWER] Unknown GPIO wake");
+            Display::backlightOn();
+            Keyboard::setBacklight(true);
             onUserActivity();
             return;
         }
@@ -346,6 +352,11 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
         // No activity - accumulate sleep time and continue
         totalSleptSecs += sleepIntervalSecs;
     }
+
+    // Exiting sleep loop (preflight failed, max duration, or state changed)
+    // Turn on backlights now
+    Display::backlightOn();
+    Keyboard::setBacklight(true);
 }
 
 // =============================================================================
@@ -481,12 +492,12 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    // Restore peripherals after wake
+    // Restore peripherals after wake (but NOT backlights - those are handled by runSleepLoop)
     delay(50);  // Stabilization time for peripherals
     Wire.begin(PIN_KB_SDA, PIN_KB_SCL, KB_I2C_FREQ);  // Restart I2C bus
     Keyboard::init();                    // Re-initialize keyboard
-    Display::backlightOn();              // Turn on display backlight
-    Keyboard::setBacklight(true);        // Turn on keyboard backlight
+    // NOTE: Backlights are NOT turned on here to avoid flash during timer wake
+    // They are turned on in runSleepLoop() only when actually exiting sleep
 
     // Re-add task to watchdog and reset it after wake
     esp_task_wdt_add(NULL);
