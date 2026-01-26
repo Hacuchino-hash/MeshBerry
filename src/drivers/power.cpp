@@ -17,6 +17,12 @@
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
 
+// MeshCore radio access (the ACTUAL hardware radio)
+#include <helpers/radiolib/CustomSX1262.h>
+#include "mesh/MeshBerrySX1262Wrapper.h"
+extern CustomSX1262* radio;  // Global from main.cpp - this is MeshCore's radio
+extern MeshBerrySX1262Wrapper* radioWrapper;  // For ISR re-attachment after sleep wake
+
 // Forward declaration for mesh pending work check
 class MeshBerryMesh;
 extern MeshBerryMesh* theMesh;
@@ -137,8 +143,24 @@ void releaseRtcGpioHolds() {
 bool doPreflightSleep() {
     // Check if LoRa DIO1 is HIGH (packet incoming/received)
     if (digitalRead(PIN_LORA_DIO1) == HIGH) {
-        Serial.println("[POWER] Preflight: BLOCKED - DIO1 HIGH");
-        return false;
+        // DIO1 stuck HIGH - try to clear the IRQ flags
+        // This can happen if MeshCore processed a packet but didn't clear the interrupt
+        if (radio) {
+            Serial.println("[POWER] Preflight: DIO1 HIGH - attempting IRQ clear");
+            radio->clearIrqFlags(0x03FF);  // Clear all IRQ flags
+            radio->startReceive();  // Re-arm the receiver
+            delay(10);  // Give it time to settle
+
+            // Re-check after clearing
+            if (digitalRead(PIN_LORA_DIO1) == HIGH) {
+                Serial.println("[POWER] Preflight: BLOCKED - DIO1 still HIGH after clear");
+                return false;
+            }
+            Serial.println("[POWER] Preflight: DIO1 cleared successfully");
+        } else {
+            Serial.println("[POWER] Preflight: BLOCKED - DIO1 HIGH (no radio)");
+            return false;
+        }
     }
 
     // Check if radio is busy (transmitting)
@@ -279,48 +301,47 @@ static void runSleepLoop(uint32_t sleepIntervalSecs, uint32_t minWakeSecs, bool 
         esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
         if (cause == ESP_SLEEP_WAKEUP_GPIO) {
-            // LoRa packet received - process it briefly then return to sleep
-            Serial.println("[POWER] LoRa wake - processing packet");
-
-            // Process mesh for minWakeSecs seconds
-            unsigned long wakeStart = millis();
-            while (millis() - wakeStart < minWakeSecs * 1000UL) {
-                // Process mesh packets
-                if (theMesh) {
-                    // Call mesh loop - need to include the header
-                    // For now, just delay to let interrupt handlers run
-                }
-                delay(10);
-
-                // Check if user did something during this time
-                // (keyboard read happens in main loop, so check lastActivityTime)
-                if (millis() - lastActivityTime < 1000) {
-                    Serial.println("[POWER] User activity during LoRa wake");
-                    return;  // Exit sleep loop
-                }
+            // GPIO wake - could be trackball or LoRa
+            // Check trackball click first (GPIO 0 active LOW)
+            // Use register read since GPIO 0 is a strapping pin
+            bool trackballPressed = (REG_READ(GPIO_IN_REG) & BIT(PIN_TRACKBALL_CLICK)) == 0;
+            if (trackballPressed) {
+                Serial.println("[POWER] Trackball GPIO wake");
+                onUserActivity();
+                return;  // Exit sleep loop - instant wake!
             }
 
-            // No user activity - continue sleeping
-            Serial.println("[POWER] LoRa processed - resuming sleep");
-            continue;
+            // Check if LoRa DIO1 is HIGH (packet received)
+            if (digitalRead(PIN_LORA_DIO1) == HIGH) {
+                Serial.println("[POWER] LoRa wake - processing packet");
+
+                // Process mesh for minWakeSecs seconds
+                unsigned long wakeStart = millis();
+                while (millis() - wakeStart < minWakeSecs * 1000UL) {
+                    if (theMesh) {
+                        // Let interrupt handlers run
+                    }
+                    delay(10);
+
+                    if (millis() - lastActivityTime < 1000) {
+                        Serial.println("[POWER] User activity during LoRa wake");
+                        return;
+                    }
+                }
+
+                Serial.println("[POWER] LoRa processed - resuming sleep");
+                continue;
+            }
+
+            // Unknown GPIO wake - treat as user activity
+            Serial.println("[POWER] Unknown GPIO wake");
+            onUserActivity();
+            return;
         }
 
-        // Timer wake - check for keyboard input
-        uint8_t key = Keyboard::read();
-        if (key != KEY_NONE) {
-            Serial.println("[POWER] Keyboard wake");
-            onUserActivity();
-            return;  // Exit sleep loop
-        }
-
-        // Check trackball (GPIO 0) using direct register read
-        // GPIO 0 is a strapping pin so we use register read
-        bool trackballClick = (REG_READ(GPIO_IN_REG) & BIT(PIN_TRACKBALL_CLICK)) == 0;  // Active LOW
-        if (trackballClick) {
-            Serial.println("[POWER] Trackball wake");
-            onUserActivity();
-            return;  // Exit sleep loop
-        }
+        // Timer wake - trackball GPIO wake should have caught trackball clicks
+        // so if we get here on timer, just accumulate sleep time and continue
+        // (Keyboard is disabled during sleep - Meshtastic approach)
 
         // No activity - accumulate sleep time and continue
         totalSleptSecs += sleepIntervalSecs;
@@ -353,24 +374,45 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     // CRITICAL: Keep RTC peripherals powered during sleep (Meshtastic pattern)
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    // Enable GPIO wakeup system
-    // NOTE: We do NOT manipulate GPIO 0/1 (strapping pins) - they stay INPUT_PULLUP from boot
+    // STEP 1: Configure radio and detach ISR FIRST (before gpio_wakeup_enable)
+    // Per ESP32 forum: https://www.esp32.com/viewtopic.php?t=39011
+    // detachInterrupt() must be called BEFORE gpio_wakeup_enable() or it interferes
+    if (radio) {
+        radio->clearPacketReceivedAction();  // Detach RadioLib ISR
+
+        if (wakeOnLoRa) {
+            // Keep radio in RX mode so it can receive packets and trigger DIO1
+            radio->startReceive();
+            Serial.println("[SLEEP] Radio staying in RX mode for LoRa wake");
+        } else {
+            // No LoRa wake needed - put radio to sleep to save power
+            radio->sleep(false);
+        }
+    }
+    detachInterrupt(PIN_LORA_DIO1);  // Detach Arduino ISR BEFORE gpio_wakeup_enable
+
+    // STEP 2: Enable GPIO wakeup system (after ISR is detached)
     esp_sleep_enable_gpio_wakeup();
 
+    // STEP 3: Configure GPIO wake sources
     // LoRa wake - DIO1 goes HIGH when packet received
-    // GPIO 45 is NOT a strapping pin, safe to use
     if (wakeOnLoRa) {
-        // CRITICAL: Meshtastic pattern - configure pull resistors first
-        gpio_pulldown_en((gpio_num_t)PIN_LORA_DIO1);
-
-        // Keep CS high (deselected) during sleep - Meshtastic pattern
+        // Keep CS high (deselected) during sleep
         pinMode(PIN_LORA_CS, OUTPUT);
         digitalWrite(PIN_LORA_CS, HIGH);
-        gpio_hold_en((gpio_num_t)PIN_LORA_CS);  // HOLD it HIGH during sleep
+        gpio_hold_en((gpio_num_t)PIN_LORA_CS);
 
-        // THEN enable wakeup
+        // Configure DIO1 as INPUT for wake detection
+        // SX1262 DIO1 is push-pull output, no internal pulldown needed
+        pinMode(PIN_LORA_DIO1, INPUT);
+
+        // Enable GPIO wake on HIGH level (packet received)
         gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
+        Serial.printf("[SLEEP] DIO1 configured for wake (current state: %d)\n", digitalRead(PIN_LORA_DIO1));
     }
+
+    // Trackball click wake - GPIO 0 goes LOW when pressed
+    gpio_wakeup_enable((gpio_num_t)PIN_TRACKBALL_CLICK, GPIO_INTR_LOW_LEVEL);
 
     // Timer wake
     if (timerSecs > 0) {
@@ -381,7 +423,6 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
     delay(200);  // CRITICAL: Longer delay to ensure everything settled (Meshtastic uses 50-100ms)
 
     // Enter light sleep - let ESP-IDF handle interrupt management
-    // FIXED: Removed noInterrupts()/interrupts() which conflicted with LoRa radio
     esp_err_t sleepResult = esp_light_sleep_start();
 
     // Check if sleep succeeded
@@ -406,10 +447,26 @@ void enterLightSleep(uint32_t timerSecs, bool wakeOnLoRa) {
 
     // === WOKE FROM SLEEP ===
 
-    // Release GPIO holds (Meshtastic pattern)
+    // Release GPIO holds and disable wake sources
     if (wakeOnLoRa) {
         gpio_hold_dis((gpio_num_t)PIN_LORA_CS);  // Release CS hold
         gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
+    }
+    gpio_wakeup_disable((gpio_num_t)PIN_TRACKBALL_CLICK);  // Disable trackball wake
+
+    // Wake MeshCore's radio (the actual hardware)
+    if (radio) {
+        radio->standby();  // Exit sleep mode
+        delay(5);  // Allow radio to settle
+        radio->clearIrqFlags(0x03FF);  // Clear all interrupt flags
+    }
+
+    // CRITICAL: Re-attach ISR that was detached before sleep
+    // radioWrapper->begin() calls setPacketReceivedAction(setFlag) to restore interrupt handling
+    // Without this, packets arrive but MeshCore's state flag never gets set, dropping all packets
+    if (radioWrapper) {
+        radioWrapper->begin();
+        Serial.println("[SLEEP] Radio ISR re-attached");
     }
 
     // Get wake cause for timing decisions

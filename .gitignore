@@ -97,6 +97,7 @@ secrets.json
 # Log files
 *.log
 logs/
+debug/
 
 # Temporary files
 *.tmp

@@ -304,12 +304,27 @@ float getSNR() {
 
 void sleep() {
     if (!radioInitialized) return;
+    radio->clearPacketReceivedAction();  // Detach ISR to prevent conflicts during sleep
     radio->sleep(false);
 }
 
 void wake() {
     if (!radioInitialized) return;
+
+    // Force standby mode to reset radio FSM
     radio->standby();
+    delay(5);  // Allow radio to settle
+
+    // Clear ALL interrupt flags
+    radio->clearIrqFlags(0x03FF);
+
+    // Reset the receive chain by setting to standby again
+    radio->standby();
+
+    // Reattach ISR
+    radio->setPacketReceivedAction(onDio1Rise);
+
+    // Start receive - this forces a clean start of the receive state machine
     radio->startReceive();
 }
 

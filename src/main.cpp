@@ -92,8 +92,8 @@ TDeckBoard board;
 
 // SPI and radio - use pointers to avoid static initialization conflicts with display
 static SPIClass* radioSPI = nullptr;
-static CustomSX1262* radio = nullptr;
-static MeshBerrySX1262Wrapper* radioWrapper = nullptr;
+CustomSX1262* radio = nullptr;  // Non-static - accessed by power.cpp for sleep/wake
+MeshBerrySX1262Wrapper* radioWrapper = nullptr;  // Non-static - accessed by power.cpp for ISR re-attach after sleep
 
 // Mesh components
 static ESP32RNG rng;

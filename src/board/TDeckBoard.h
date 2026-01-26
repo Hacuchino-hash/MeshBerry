@@ -107,7 +107,7 @@ private:
     bool _peripheral_power_on;
 
     // Battery filtering for stable readings
-    static constexpr int BATT_FILTER_SIZE = 4;
+    static constexpr int BATT_FILTER_SIZE = 8;  // Increased from 4 for more stable readings
     uint16_t _battFilter[BATT_FILTER_SIZE] = {0};
     int _battFilterIdx = 0;
     bool _battFilterFilled = false;

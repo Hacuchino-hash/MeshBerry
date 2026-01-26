@@ -20,7 +20,11 @@
       "Bash(git commit:*)",
       "Bash(git merge:*)",
       "Bash(/c/Users/Josh/.platformio/penv/Scripts/platformio.exe run:*)",
-      "Bash(source:*)"
+      "Bash(source:*)",
+      "Bash(ls:*)",
+      "Bash(pio device list:*)",
+      "Bash(pio device monitor:*)",
+      "Bash(stty:*)"
     ]
   }
 }

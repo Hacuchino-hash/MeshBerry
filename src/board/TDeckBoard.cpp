@@ -126,8 +126,9 @@ uint16_t TDeckBoard::getBattMilliVolts() {
     }
     uint16_t filtered = sum / count;
 
-    // Apply hysteresis: only change reported value if difference > 20mV
-    if (_lastReportedMV == 0 || abs((int)filtered - (int)_lastReportedMV) > 20) {
+    // Apply hysteresis: only change reported value if difference > 50mV
+    // Increased from 20mV to reduce jumpy readings from ESP32 ADC noise
+    if (_lastReportedMV == 0 || abs((int)filtered - (int)_lastReportedMV) > 50) {
         _lastReportedMV = filtered;
     }
 
