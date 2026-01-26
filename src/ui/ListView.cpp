@@ -111,44 +111,42 @@ void ListView::drawItem(int index, bool selected) {
     // Check if item is visible
     if (itemY < _y || itemY + _itemHeight > _y + _height) return;
 
-    // Background
+    // Modern background styling
     if (selected) {
-        // Selected item - blue highlight with rounded corners
-        Display::fillRoundRect(_x + 2, itemY + 2,
-                               _width - 4, _itemHeight - 4,
-                               4, Theme::BLUE_DARK);
-        Display::drawRoundRect(_x + 2, itemY + 2,
-                               _width - 4, _itemHeight - 4,
-                               4, Theme::ACCENT);
+        // Selected item - softer teal highlight with single rounded border
+        Display::fillRoundRect(_x + 4, itemY + 2,
+                               _width - 8, _itemHeight - 4,
+                               Theme::RADIUS_MEDIUM, Theme::ACCENT_PRIMARY);
     } else {
-        // Unselected - clear background
+        // Unselected - clean background
         Display::fillRect(_x, itemY, _width, _itemHeight, Theme::BG_PRIMARY);
     }
 
-    int16_t textX = _x + _itemPadding;
+    int16_t textX = _x + _itemPadding + 4;  // Slightly more padding
     int16_t iconSize = 16;
 
     // Draw indicator dot if present
     if (item.hasIndicator) {
-        Display::fillCircle(_x + 6, itemY + _itemHeight / 2, 3, item.indicatorColor);
-        textX += 8;
+        Display::fillCircle(_x + 8, itemY + _itemHeight / 2, 3, item.indicatorColor);
+        textX += 10;
     }
 
     // Draw icon if present
     if (item.icon) {
         int16_t iconY = itemY + (_itemHeight - iconSize) / 2;
-        Display::drawBitmap(textX, iconY, item.icon, iconSize, iconSize, item.iconColor);
-        textX += iconSize + 6;
+        uint16_t iconColor = selected ? Theme::WHITE : item.iconColor;
+        Display::drawBitmap(textX, iconY, item.icon, iconSize, iconSize, iconColor);
+        textX += iconSize + 8;  // More spacing after icon
     }
 
     // Calculate max text width (account for padding and scroll indicators)
-    int16_t maxTextWidth = _x + _width - textX - (_showScrollIndicators ? 12 : 4);
+    int16_t maxTextWidth = _x + _width - textX - (_showScrollIndicators ? 14 : 6);
 
     // Draw primary text
     int16_t primaryY = itemY + 8;
     if (item.secondary) {
         // Two-line layout
-        primaryY = itemY + 6;
+        primaryY = itemY + 8;
     } else {
         // Single line - center vertically
         primaryY = itemY + (_itemHeight - 8) / 2;
@@ -160,17 +158,13 @@ void ListView::drawItem(int index, bool selected) {
 
     // Draw secondary text if present (truncate to fit)
     if (item.secondary) {
-        int16_t secondaryY = itemY + 22;
-        uint16_t secondaryColor = selected ? Theme::GRAY_LIGHT : Theme::TEXT_SECONDARY;
+        int16_t secondaryY = itemY + 24;
+        uint16_t secondaryColor = selected ? Theme::GRAY_LIGHTER : Theme::TEXT_SECONDARY;
         const char* secondaryText = Theme::truncateText(item.secondary, maxTextWidth, 1);
         Display::drawText(textX, secondaryY, secondaryText, secondaryColor, 1);
     }
 
-    // Draw divider below (except for selected item)
-    if (!selected && index < _itemCount - 1) {
-        Display::drawHLine(_x + _itemPadding, itemY + _itemHeight - 1,
-                           _width - _itemPadding * 2, Theme::DIVIDER);
-    }
+    // No divider lines - modern clean look uses spacing instead
 }
 
 bool ListView::handleTrackball(bool up, bool down, bool left, bool right, bool click) {

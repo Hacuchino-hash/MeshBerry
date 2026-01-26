@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 NodakMesh (nodakmesh.org)
  *
- * BlackBerry Bold-inspired color scheme and UI constants
+ * Modern, Apple-inspired color scheme and UI constants
  */
 
 #ifndef MESHBERRY_THEME_H
@@ -15,43 +15,60 @@
 namespace Theme {
 
 // =============================================================================
-// BLACKBERRY-INSPIRED COLOR PALETTE (RGB565)
+// MODERN APPLE-INSPIRED COLOR PALETTE (RGB565)
 // =============================================================================
 
-// Primary colors
-constexpr uint16_t BLACK        = 0x0000;  // Main background
-constexpr uint16_t WHITE        = 0xFFFF;  // Primary text
-constexpr uint16_t BLUE         = 0x2B9F;  // BlackBerry Blue accent (#1475DC)
-constexpr uint16_t BLUE_LIGHT   = 0x5D7F;  // Lighter blue for highlights
-constexpr uint16_t BLUE_DARK    = 0x1A5F;  // Darker blue for pressed states
+// Background colors - soft dark mode (not pure black)
+constexpr uint16_t BG_DARK      = 0x18E3;  // #1C1C1E - Apple dark mode base
+constexpr uint16_t BG_ELEVATED  = 0x2945;  // #2C2C2E - Elevated surfaces (cards, tiles)
+constexpr uint16_t BG_TERTIARY  = 0x39C7;  // #3A3A3C - Tertiary backgrounds
 
-// Grayscale
-constexpr uint16_t GRAY_DARKEST = 0x1082;  // Card backgrounds, panels
-constexpr uint16_t GRAY_DARK    = 0x2104;  // Secondary backgrounds
-constexpr uint16_t GRAY_MID     = 0x4208;  // Borders, dividers
-constexpr uint16_t GRAY_LIGHT   = 0x8410;  // Inactive text, disabled
-constexpr uint16_t GRAY_LIGHTER = 0xC618;  // Subtle highlights
+// Legacy aliases (for compatibility)
+constexpr uint16_t BLACK        = BG_DARK;      // Use dark gray instead of pure black
+constexpr uint16_t WHITE        = 0xFFFF;       // Primary text
 
-// Status colors
-constexpr uint16_t GREEN        = 0x07E0;  // Online, success, connected
-constexpr uint16_t GREEN_DARK   = 0x03E0;  // Darker green
-constexpr uint16_t RED          = 0xF800;  // Error, offline, alert
-constexpr uint16_t RED_DARK     = 0xA000;  // Darker red
-constexpr uint16_t YELLOW       = 0xFE60;  // Warning, notification
-constexpr uint16_t ORANGE       = 0xFC00;  // Caution
+// Accent colors - modern teal (communicates connectivity)
+constexpr uint16_t ACCENT_PRIMARY   = 0x07FF;   // #00BCD4 - Teal (primary actions)
+constexpr uint16_t ACCENT_LIGHT     = 0x5FFF;   // #5DD3E8 - Light teal (highlights)
+constexpr uint16_t ACCENT_PRESSED   = 0x0599;   // #0097A7 - Darker teal (pressed states)
+
+// Legacy blue aliases (for compatibility)
+constexpr uint16_t BLUE         = ACCENT_PRIMARY;
+constexpr uint16_t BLUE_LIGHT   = ACCENT_LIGHT;
+constexpr uint16_t BLUE_DARK    = ACCENT_PRESSED;
+
+// Grayscale - refined for modern look
+constexpr uint16_t GRAY_DARKEST = BG_ELEVATED;  // Card backgrounds
+constexpr uint16_t GRAY_DARK    = BG_TERTIARY;  // Secondary backgrounds
+constexpr uint16_t GRAY_MID     = 0x4A49;       // #4A4A4C - Borders, dividers
+constexpr uint16_t GRAY_LIGHT   = 0x9CF3;       // #9E9E9E - Secondary text
+constexpr uint16_t GRAY_LIGHTER = 0xCE79;       // #CCCCCC - Subtle highlights
+
+// Status colors - softer, more refined
+constexpr uint16_t GREEN        = 0x2DC9;       // #2ECC71 - Soft green (success)
+constexpr uint16_t GREEN_DARK   = 0x24A3;       // #27AE60 - Darker green
+constexpr uint16_t RED          = 0xFA12;       // #FF5252 - Soft red (error)
+constexpr uint16_t RED_DARK     = 0xC800;       // #C62828 - Darker red
+constexpr uint16_t YELLOW       = 0xFD20;       // #F5A623 - Amber (warning)
+constexpr uint16_t ORANGE       = 0xFC60;       // #FF9800 - Orange (caution)
 
 // Semantic aliases
-constexpr uint16_t BG_PRIMARY   = BLACK;
-constexpr uint16_t BG_SECONDARY = GRAY_DARKEST;
-constexpr uint16_t BG_CARD      = GRAY_DARK;
+constexpr uint16_t BG_PRIMARY   = BG_DARK;
+constexpr uint16_t BG_SECONDARY = BG_ELEVATED;
+constexpr uint16_t BG_CARD      = BG_ELEVATED;
 constexpr uint16_t TEXT_PRIMARY = WHITE;
 constexpr uint16_t TEXT_SECONDARY = GRAY_LIGHT;
-constexpr uint16_t ACCENT       = BLUE;
-constexpr uint16_t FOCUS        = BLUE_LIGHT;
-constexpr uint16_t DIVIDER      = GRAY_MID;
+constexpr uint16_t TEXT_DISABLED = 0x632C;      // #636366 - Disabled text
+constexpr uint16_t ACCENT       = ACCENT_PRIMARY;
+constexpr uint16_t FOCUS        = ACCENT_LIGHT;
+constexpr uint16_t DIVIDER      = 0x39C7;       // Subtle divider (same as BG_TERTIARY)
 constexpr uint16_t SUCCESS      = GREEN;
 constexpr uint16_t ERROR        = RED;
 constexpr uint16_t WARNING      = YELLOW;
+
+// Chat bubble colors
+constexpr uint16_t BUBBLE_OUTGOING = ACCENT_PRIMARY;  // Teal for sent messages
+constexpr uint16_t BUBBLE_INCOMING = BG_TERTIARY;     // Gray for received messages
 
 // =============================================================================
 // LAYOUT CONSTANTS
@@ -85,12 +102,12 @@ constexpr int16_t LIST_ITEM_PADDING     = 8;
 constexpr int16_t LIST_ICON_SIZE        = 24;
 constexpr int16_t LIST_DIVIDER_HEIGHT   = 1;
 
-// Home screen grid
-constexpr int16_t HOME_GRID_COLS    = 4;
+// Home screen grid - larger tiles with more breathing room
+constexpr int16_t HOME_GRID_COLS    = 3;
 constexpr int16_t HOME_GRID_ROWS    = 2;
-constexpr int16_t HOME_TILE_WIDTH   = 76;
-constexpr int16_t HOME_TILE_HEIGHT  = 85;
-constexpr int16_t HOME_TILE_MARGIN  = 4;
+constexpr int16_t HOME_TILE_WIDTH   = 96;   // Larger tiles
+constexpr int16_t HOME_TILE_HEIGHT  = 80;
+constexpr int16_t HOME_TILE_MARGIN  = 8;    // More spacing
 constexpr int16_t HOME_ICON_SIZE    = 32;
 
 // Dialog dimensions
@@ -108,10 +125,11 @@ constexpr int16_t BUTTON_RADIUS     = 4;
 constexpr int16_t INPUT_HEIGHT      = 28;
 constexpr int16_t INPUT_RADIUS      = 4;
 
-// Corner radius for rounded elements
-constexpr int16_t RADIUS_SMALL      = 2;
-constexpr int16_t RADIUS_MEDIUM     = 4;
-constexpr int16_t RADIUS_LARGE      = 8;
+// Corner radius for rounded elements - more rounded for modern look
+constexpr int16_t RADIUS_SMALL      = 4;
+constexpr int16_t RADIUS_MEDIUM     = 8;
+constexpr int16_t RADIUS_LARGE      = 12;
+constexpr int16_t RADIUS_BUBBLE     = 12;  // For chat bubbles
 
 // =============================================================================
 // FONT SIZES

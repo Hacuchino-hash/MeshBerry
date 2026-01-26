@@ -109,16 +109,15 @@ void DMChatScreen::draw(bool fullRedraw) {
                           Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT,
                           Theme::BG_PRIMARY);
 
-        // Draw header with contact name
-        Display::fillRect(0, Theme::CONTENT_Y, Theme::SCREEN_WIDTH, 24, Theme::BG_SECONDARY);
-        Display::drawBitmap(8, Theme::CONTENT_Y + 4, Icons::CONTACTS_ICON, 16, 16, Theme::GREEN);
-        Display::drawText(28, Theme::CONTENT_Y + 8, _contactName, Theme::WHITE, 1);
+        // Draw header with contact name - modern elevated style
+        Display::fillRect(0, Theme::CONTENT_Y, Theme::SCREEN_WIDTH, 24, Theme::BG_ELEVATED);
+        Display::drawBitmap(8, Theme::CONTENT_Y + 4, Icons::CONTACTS_ICON, 16, 16, Theme::SUCCESS);
+        Display::drawText(28, Theme::CONTENT_Y + 8, _contactName, Theme::TEXT_PRIMARY, 1);
 
-        // "DM" indicator
-        Display::drawText(Theme::SCREEN_WIDTH - 28, Theme::CONTENT_Y + 8, "DM", Theme::ACCENT, 1);
+        // "DM" indicator in accent color
+        Display::drawText(Theme::SCREEN_WIDTH - 28, Theme::CONTENT_Y + 8, "DM", Theme::ACCENT_PRIMARY, 1);
 
-        // Divider
-        Display::drawHLine(0, Theme::CONTENT_Y + 24, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+        // No divider line - cleaner modern look
     }
 
     drawMessages(fullRedraw);
@@ -144,7 +143,7 @@ void DMChatScreen::drawMessages(bool fullRedraw) {
                                   "No messages yet", Theme::TEXT_SECONDARY, 1);
         Display::drawTextCentered(0, msgY + msgHeight / 2 + 4,
                                   Theme::SCREEN_WIDTH,
-                                  "Type to send", Theme::GRAY_LIGHT, 1);
+                                  "Type to send", Theme::TEXT_DISABLED, 1);
         return;
     }
 
@@ -155,92 +154,118 @@ void DMChatScreen::drawMessages(bool fullRedraw) {
                                   "No messages yet", Theme::TEXT_SECONDARY, 1);
         Display::drawTextCentered(0, msgY + msgHeight / 2 + 4,
                                   Theme::SCREEN_WIDTH,
-                                  "Type to send", Theme::GRAY_LIGHT, 1);
+                                  "Type to send", Theme::TEXT_DISABLED, 1);
         return;
     }
 
-    // Estimate visible messages with wrapping (~3 lines per message average)
-    int estVisibleMsgs = msgHeight / 30;
+    // Bubble styling constants
+    const int16_t bubbleMargin = 8;
+    const int16_t bubblePadding = 6;
+    const int16_t maxBubbleWidth = (Theme::SCREEN_WIDTH * 70) / 100;  // 70% of screen
+    const int16_t lineHeight = 10;
+    const int16_t bubbleGap = 6;
+
+    // Estimate visible messages with wrapping
+    int estVisibleMsgs = msgHeight / 35;
     int displayStartIdx = conv->messageCount - estVisibleMsgs - _scrollOffset;
     if (displayStartIdx < 0) displayStartIdx = 0;
 
-    int16_t y = msgY + 2;
-    for (int i = displayStartIdx; i < conv->messageCount && y < maxY - 10; i++) {
+    int16_t y = msgY + 4;
+    for (int i = displayStartIdx; i < conv->messageCount && y < maxY - 20; i++) {
         const DMMessage* msg = conv->getMessage(i);
         if (!msg) continue;
 
-        // Format: "> message [status]" for outgoing, "< message" for incoming
-        char line[220];
-        if (msg->isOutgoing) {
-            // Add delivery status indicator for outgoing messages
-            const char* statusStr = "";
-            switch (msg->status) {
-                case DM_STATUS_SENDING:   statusStr = " ..."; break;
-                case DM_STATUS_SENT:      statusStr = " [Sent]"; break;
-                case DM_STATUS_DELIVERED: statusStr = " [OK]"; break;
-                case DM_STATUS_FAILED:    statusStr = " [FAIL]"; break;
-            }
-            snprintf(line, sizeof(line), "> %s%s", msg->text, statusStr);
-        } else {
-            snprintf(line, sizeof(line), "< %s", msg->text);
-        }
-
-        // Wrap text into multiple lines
+        // Wrap text for bubble width calculation
         char wrappedLines[4][64];
-        int lineCount = Theme::wrapText(line, Theme::SCREEN_WIDTH - 20, 1, wrappedLines, 4);
+        int lineCount = Theme::wrapText(msg->text, maxBubbleWidth - bubblePadding * 2, 1, wrappedLines, 4);
 
-        // Color: outgoing = accent (blue), incoming = green, failed = red
-        uint16_t textColor;
+        // Calculate bubble dimensions
+        int16_t maxLineWidth = 0;
+        for (int ln = 0; ln < lineCount; ln++) {
+            int16_t w = strlen(wrappedLines[ln]) * 6;
+            if (w > maxLineWidth) maxLineWidth = w;
+        }
+        int16_t bubbleWidth = maxLineWidth + bubblePadding * 2;
+        if (bubbleWidth < 40) bubbleWidth = 40;
+        int16_t bubbleHeight = lineCount * lineHeight + bubblePadding * 2;
+
+        // Calculate bubble position and color
+        int16_t bubbleX;
+        uint16_t bubbleColor;
+        uint16_t textColor = Theme::TEXT_PRIMARY;
+
         if (msg->isOutgoing) {
+            // Outgoing: right-aligned, teal bubble (or red if failed)
+            bubbleX = Theme::SCREEN_WIDTH - bubbleWidth - bubbleMargin;
             if (msg->status == DM_STATUS_FAILED) {
-                textColor = Theme::RED;
-            } else if (msg->status == DM_STATUS_DELIVERED) {
-                textColor = Theme::GREEN;  // Green for confirmed delivery
+                bubbleColor = Theme::ERROR;
             } else {
-                textColor = Theme::ACCENT;  // Blue for sending/sent
+                bubbleColor = Theme::BUBBLE_OUTGOING;
             }
         } else {
-            textColor = Theme::GREEN;
+            // Incoming: left-aligned, gray bubble
+            bubbleX = bubbleMargin;
+            bubbleColor = Theme::BUBBLE_INCOMING;
         }
 
-        // Draw each wrapped line
-        for (int ln = 0; ln < lineCount && y < maxY - 10; ln++) {
-            Display::drawTextWithEmoji(8, y, wrappedLines[ln], textColor, 1);
-            y += 10;
+        // Draw bubble
+        Display::fillRoundRect(bubbleX, y, bubbleWidth, bubbleHeight,
+                               Theme::RADIUS_BUBBLE, bubbleColor);
+
+        // Draw message text inside bubble
+        int16_t textY = y + bubblePadding;
+        for (int ln = 0; ln < lineCount; ln++) {
+            Display::drawTextWithEmoji(bubbleX + bubblePadding, textY, wrappedLines[ln], textColor, 1);
+            textY += lineHeight;
         }
 
-        y += 2;  // Gap between messages
+        // Status indicator for outgoing messages (small text below bubble)
+        if (msg->isOutgoing && msg->status != DM_STATUS_SENDING) {
+            const char* statusStr = "";
+            uint16_t statusColor = Theme::TEXT_DISABLED;
+            switch (msg->status) {
+                case DM_STATUS_SENT:      statusStr = "Sent"; break;
+                case DM_STATUS_DELIVERED: statusStr = "Delivered"; statusColor = Theme::SUCCESS; break;
+                case DM_STATUS_FAILED:    statusStr = "Failed"; statusColor = Theme::ERROR; break;
+                default: break;
+            }
+            if (statusStr[0]) {
+                Display::drawTextRight(Theme::SCREEN_WIDTH - bubbleMargin, y + bubbleHeight + 1, statusStr, statusColor, 1);
+                y += 10;  // Extra space for status
+            }
+        }
+
+        y += bubbleHeight + bubbleGap;
     }
 
     // Scroll indicators
     if (_scrollOffset > 0) {
         Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
-                           Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
+                           Icons::ARROW_UP, 8, 8, Theme::TEXT_DISABLED);
     }
     if (displayStartIdx > 0) {
         Display::drawBitmap(Theme::SCREEN_WIDTH - 12, maxY - 10,
-                           Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
+                           Icons::ARROW_DOWN, 8, 8, Theme::TEXT_DISABLED);
     }
 }
 
 void DMChatScreen::drawInputBar() {
     int16_t inputY = Theme::SOFTKEY_BAR_Y - 28;
 
-    // Input bar background
-    Display::fillRect(0, inputY, Theme::SCREEN_WIDTH, 28, Theme::BG_SECONDARY);
-    Display::drawHLine(0, inputY, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+    // Input bar background - modern elevated style (no divider)
+    Display::fillRect(0, inputY, Theme::SCREEN_WIDTH, 28, Theme::BG_ELEVATED);
 
-    // Input field
+    // Input field - rounded modern style
     int16_t fieldX = 8;
     int16_t fieldY = inputY + 4;
     int16_t fieldW = Theme::SCREEN_WIDTH - 16;
     int16_t fieldH = 20;
 
-    uint16_t bgColor = _inputMode ? Theme::GRAY_DARK : Theme::BG_SECONDARY;
-    uint16_t borderColor = _inputMode ? Theme::ACCENT : Theme::GRAY_MID;
+    uint16_t bgColor = _inputMode ? Theme::BG_TERTIARY : Theme::BG_ELEVATED;
+    uint16_t borderColor = _inputMode ? Theme::ACCENT_PRIMARY : Theme::BG_TERTIARY;
 
-    Display::fillRoundRect(fieldX, fieldY, fieldW, fieldH, 4, bgColor);
-    Display::drawRoundRect(fieldX, fieldY, fieldW, fieldH, 4, borderColor);
+    Display::fillRoundRect(fieldX, fieldY, fieldW, fieldH, Theme::RADIUS_MEDIUM, bgColor);
+    Display::drawRoundRect(fieldX, fieldY, fieldW, fieldH, Theme::RADIUS_MEDIUM, borderColor);
 
     // Input text or placeholder
     if (_inputPos > 0) {
@@ -251,17 +276,17 @@ void DMChatScreen::drawInputBar() {
             displayText = _inputBuffer + (_inputPos - maxChars);
         }
         // Use drawTextWithEmoji to properly render emoji glyphs
-        Display::drawTextWithEmoji(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
+        Display::drawTextWithEmoji(fieldX + 4, fieldY + 6, displayText, Theme::TEXT_PRIMARY, 1);
 
         // Cursor (blinking)
         if (_inputMode && (millis() / 500) % 2 == 0) {
             int16_t cursorX = fieldX + 4 + strlen(displayText) * 6;
             if (cursorX < fieldX + fieldW - 4) {
-                Display::drawVLine(cursorX, fieldY + 4, fieldH - 8, Theme::WHITE);
+                Display::drawVLine(cursorX, fieldY + 4, fieldH - 8, Theme::TEXT_PRIMARY);
             }
         }
     } else {
-        Display::drawText(fieldX + 4, fieldY + 6, "Type message...", Theme::GRAY_LIGHT, 1);
+        Display::drawText(fieldX + 4, fieldY + 6, "Type message...", Theme::TEXT_DISABLED, 1);
     }
 }
 

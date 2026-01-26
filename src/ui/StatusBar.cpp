@@ -72,30 +72,29 @@ void draw() {
     bool notifChanged = (notifCount != prevNotifCount);
     bool timeChanged = (currentMinute != prevTime);
 
-    // Draw background if full redraw needed
+    // Draw background if full redraw needed - modern elevated surface
     if (forceRedraw) {
-        Display::fillRect(0, 0, Theme::SCREEN_WIDTH, Theme::STATUS_BAR_HEIGHT, Theme::BG_SECONDARY);
-        // Bottom divider line
-        Display::drawHLine(0, Theme::STATUS_BAR_HEIGHT - 1, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+        Display::fillRect(0, 0, Theme::SCREEN_WIDTH, Theme::STATUS_BAR_HEIGHT, Theme::BG_ELEVATED);
+        // No divider line - cleaner modern look
     }
 
-    int16_t x = 4;
+    int16_t x = 6;  // Slightly more padding
     int16_t y = (Theme::STATUS_BAR_HEIGHT - 8) / 2;  // Center 8px icons vertically
 
     // === LEFT SIDE: Status icons ===
 
     // LoRa status icon
     if (forceRedraw || loraChanged) {
-        uint16_t loraColor = loraConnected ? Theme::GREEN : Theme::GRAY_LIGHT;
-        Display::fillRect(x, y - 1, 10, 10, Theme::BG_SECONDARY);  // Clear area
+        uint16_t loraColor = loraConnected ? Theme::SUCCESS : Theme::TEXT_DISABLED;
+        Display::fillRect(x, y - 1, 10, 10, Theme::BG_ELEVATED);  // Clear area
         Display::drawBitmap(x, y, Icons::LORA_ICON, 8, 8, loraColor);
         prevLoraConnected = loraConnected;
     }
-    x += 12;
+    x += 14;  // More spacing
 
     // Signal strength (if connected)
     if (forceRedraw || loraChanged) {
-        Display::fillRect(x, y - 1, 10, 10, Theme::BG_SECONDARY);
+        Display::fillRect(x, y - 1, 10, 10, Theme::BG_ELEVATED);
         if (loraConnected) {
             const uint8_t* signalIcon;
             if (loraRssi > -70) {
@@ -107,30 +106,30 @@ void draw() {
             } else {
                 signalIcon = Icons::SIGNAL_NONE;
             }
-            Display::drawBitmap(x, y, signalIcon, 8, 8, Theme::WHITE);
+            Display::drawBitmap(x, y, signalIcon, 8, 8, Theme::TEXT_PRIMARY);
         }
     }
-    x += 12;
+    x += 14;
 
     // GPS status (if present)
     if (gpsPresent && (forceRedraw || gpsChanged)) {
-        Display::fillRect(x, y - 1, 10, 10, Theme::BG_SECONDARY);
-        uint16_t gpsColor = gpsFix ? Theme::GREEN : Theme::GRAY_LIGHT;
+        Display::fillRect(x, y - 1, 10, 10, Theme::BG_ELEVATED);
+        uint16_t gpsColor = gpsFix ? Theme::SUCCESS : Theme::TEXT_DISABLED;
         // Simple GPS indicator (just a dot for now)
         Display::fillCircle(x + 4, y + 4, 3, gpsColor);
         prevGpsFix = gpsFix;
     }
-    if (gpsPresent) x += 12;
+    if (gpsPresent) x += 14;
 
-    // Notification badge
+    // Notification badge - modern pill style
     if (notifCount > 0 && (forceRedraw || notifChanged)) {
-        Display::fillRect(x, y - 1, 16, 10, Theme::BG_SECONDARY);
-        Display::fillCircle(x + 4, y + 4, 4, Theme::RED);
+        Display::fillRect(x, y - 1, 16, 10, Theme::BG_ELEVATED);
+        Display::fillRoundRect(x, y, 12, 8, 4, Theme::ERROR);
         if (notifCount < 10) {
             char numStr[2] = { (char)('0' + notifCount), '\0' };
-            Display::drawText(x + 2, y, numStr, Theme::WHITE, 1);
+            Display::drawText(x + 3, y, numStr, Theme::WHITE, 1);
         } else {
-            Display::drawText(x + 1, y, "+", Theme::WHITE, 1);
+            Display::drawText(x + 2, y, "+", Theme::WHITE, 1);
         }
         prevNotifCount = notifCount;
     }
@@ -140,11 +139,11 @@ void draw() {
     int16_t centerWidth = 160;
 
     if (forceRedraw || statusMessage[0]) {
-        Display::fillRect(centerX, 0, centerWidth, Theme::STATUS_BAR_HEIGHT - 1, Theme::BG_SECONDARY);
+        Display::fillRect(centerX, 0, centerWidth, Theme::STATUS_BAR_HEIGHT, Theme::BG_ELEVATED);
 
         if (statusMessage[0]) {
             // Show temporary status message
-            Display::drawTextCentered(centerX, y, centerWidth, statusMessage, Theme::YELLOW, 1);
+            Display::drawTextCentered(centerX, y, centerWidth, statusMessage, Theme::WARNING, 1);
         } else if (nodeName[0]) {
             // Show node name
             Display::drawTextCentered(centerX, y, centerWidth, nodeName, Theme::TEXT_SECONDARY, 1);
@@ -152,7 +151,7 @@ void draw() {
     }
 
     // === RIGHT SIDE: Battery and time ===
-    x = Theme::SCREEN_WIDTH - 4;
+    x = Theme::SCREEN_WIDTH - 6;  // More padding
 
     // Time (HH:MM) - currentTime is Unix epoch, apply timezone offset
     if (forceRedraw || timeChanged) {
@@ -167,28 +166,28 @@ void draw() {
         uint32_t mins = (localSeconds % 3600) / 60;
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d", (int)hours, (int)mins);
 
-        Display::fillRect(x - 36, y - 1, 36, 10, Theme::BG_SECONDARY);
-        Display::drawTextRight(x, y, timeStr, Theme::WHITE, 1);
+        Display::fillRect(x - 36, y - 1, 36, 10, Theme::BG_ELEVATED);
+        Display::drawTextRight(x, y, timeStr, Theme::TEXT_PRIMARY, 1);
         prevTime = currentMinute;  // Store as minutes for comparison
     }
-    x -= 40;
+    x -= 42;  // More spacing
 
     // Battery percentage
     if (forceRedraw || batteryChanged) {
         char battStr[5];
         snprintf(battStr, sizeof(battStr), "%d%%", batteryPercent);
 
-        // Choose color based on level
+        // Choose color based on level - softer colors
         uint16_t battColor;
         if (batteryPercent > 50) {
-            battColor = Theme::GREEN;
+            battColor = Theme::SUCCESS;
         } else if (batteryPercent > 20) {
-            battColor = Theme::YELLOW;
+            battColor = Theme::WARNING;
         } else {
-            battColor = Theme::RED;
+            battColor = Theme::ERROR;
         }
 
-        Display::fillRect(x - 30, y - 1, 30, 10, Theme::BG_SECONDARY);
+        Display::fillRect(x - 30, y - 1, 30, 10, Theme::BG_ELEVATED);
         Display::drawTextRight(x, y, battStr, battColor, 1);
         prevBatteryPercent = batteryPercent;
     }

@@ -8,25 +8,27 @@
 #include "HomeScreen.h"
 #include "SoftKeyBar.h"
 #include "Icons.h"
+#include "Icons32.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 
-// Menu item configuration
+// Menu item configuration with both 16x16 and 32x32 icons
 struct MenuItemConfig {
     const char* label;
-    const uint8_t* icon;
+    const uint8_t* icon16;      // 16x16 icon (fallback)
+    const uint8_t* icon32;      // 32x32 icon (primary)
     ScreenId targetScreen;
 };
 
 // Note: Channels moved to Messages screen (channels are group chats)
 // Note: Repeaters removed - ContactsScreen now has separate sections
 static const MenuItemConfig menuItems[HOME_ITEM_COUNT] = {
-    { "Messages",  Icons::MSG_ICON,       ScreenId::MESSAGES },
-    { "Contacts",  Icons::CONTACTS_ICON,  ScreenId::CONTACTS },
-    { "Settings",  Icons::SETTINGS_ICON,  ScreenId::SETTINGS },
-    { "Status",    Icons::INFO_ICON,      ScreenId::STATUS },
-    { "GPS",       Icons::GPS_ICON,       ScreenId::GPS },
-    { "About",     Icons::INFO_ICON,      ScreenId::ABOUT }
+    { "Messages",  Icons::MSG_ICON,       Icons32::MSG_ICON,      ScreenId::MESSAGES },
+    { "Contacts",  Icons::CONTACTS_ICON,  Icons32::CONTACTS_ICON, ScreenId::CONTACTS },
+    { "Settings",  Icons::SETTINGS_ICON,  Icons32::SETTINGS_ICON, ScreenId::SETTINGS },
+    { "Status",    Icons::INFO_ICON,      Icons32::STATUS_ICON,   ScreenId::STATUS },
+    { "GPS",       Icons::GPS_ICON,       Icons32::GPS_ICON,      ScreenId::GPS },
+    { "About",     Icons::INFO_ICON,      Icons32::ABOUT_ICON,    ScreenId::ABOUT }
 };
 
 void HomeScreen::onEnter() {
@@ -76,49 +78,50 @@ void HomeScreen::drawTile(int index, bool selected) {
     int16_t x = GRID_START_X + col * (TILE_WIDTH + TILE_MARGIN);
     int16_t y = GRID_START_Y + row * (TILE_HEIGHT + TILE_MARGIN);
 
-    // Background with rounded corners
-    uint16_t bgColor = selected ? Theme::BLUE_DARK : Theme::BG_SECONDARY;
-    Display::fillRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_MEDIUM, bgColor);
+    // Modern tile background with larger radius
+    uint16_t bgColor = selected ? Theme::ACCENT_PRESSED : Theme::BG_ELEVATED;
+    Display::fillRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_LARGE, bgColor);
 
-    // Selection border (BB-style blue highlight)
+    // Subtle selection border (single line, not double)
     if (selected) {
-        Display::drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_MEDIUM, Theme::BLUE);
-        Display::drawRoundRect(x + 1, y + 1, TILE_WIDTH - 2, TILE_HEIGHT - 2,
-                               Theme::RADIUS_MEDIUM - 1, Theme::BLUE_LIGHT);
+        Display::drawRoundRect(x, y, TILE_WIDTH, TILE_HEIGHT, Theme::RADIUS_LARGE, Theme::ACCENT_PRIMARY);
     }
 
-    // Icon (centered horizontally, near top)
-    int16_t iconX = x + (TILE_WIDTH - 16) / 2;
-    int16_t iconY = y + 15;
-    uint16_t iconColor = selected ? Theme::WHITE : Theme::GRAY_LIGHTER;
-    Display::drawBitmap(iconX, iconY, item.icon, 16, 16, iconColor);
+    // Icon (32x32, centered horizontally, positioned in upper portion of tile)
+    int16_t iconX = x + (TILE_WIDTH - 32) / 2;
+    int16_t iconY = y + 10;
+    uint16_t iconColor = selected ? Theme::WHITE : Theme::TEXT_PRIMARY;
+    Display::drawBitmap(iconX, iconY, item.icon32, 32, 32, iconColor);
 
     // Label (centered below icon)
-    int16_t labelY = y + 45;
+    int16_t labelY = y + 48;
     uint16_t textColor = selected ? Theme::WHITE : Theme::TEXT_SECONDARY;
 
     // Truncate label if needed
-    const char* label = Theme::truncateText(item.label, TILE_WIDTH - 8, Theme::FONT_SMALL);
+    const char* label = Theme::truncateText(item.label, TILE_WIDTH - 12, Theme::FONT_SMALL);
     Display::drawTextCentered(x, labelY, TILE_WIDTH, label, textColor, Theme::FONT_SMALL);
 
-    // Badge (if any)
+    // Badge (if any) - modern pill style
     uint8_t badge = _badges[index];
     if (badge > 0) {
         // Badge position: top-right of tile
-        int16_t badgeX = x + TILE_WIDTH - 14;
-        int16_t badgeY = y + 4;
+        int16_t badgeX = x + TILE_WIDTH - 18;
+        int16_t badgeY = y + 6;
 
-        // Badge background
-        Display::fillCircle(badgeX + 5, badgeY + 5, 7, Theme::RED);
-
-        // Badge text
+        // Badge background (pill shape for 2+ digits)
         char badgeStr[4];
+        int badgeWidth;
         if (badge > 9) {
             strcpy(badgeStr, "9+");
+            badgeWidth = 18;
         } else {
             snprintf(badgeStr, sizeof(badgeStr), "%d", badge);
+            badgeWidth = 14;
         }
-        Display::drawTextCentered(badgeX - 1, badgeY + 2, 12, badgeStr, Theme::WHITE, 1);
+        Display::fillRoundRect(badgeX, badgeY, badgeWidth, 12, 6, Theme::ERROR);
+
+        // Badge text
+        Display::drawTextCentered(badgeX, badgeY + 2, badgeWidth, badgeStr, Theme::WHITE, 1);
     }
 }
 

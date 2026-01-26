@@ -116,13 +116,12 @@ void ChatScreen::draw(bool fullRedraw) {
                           Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT,
                           Theme::BG_PRIMARY);
 
-        // Draw header with channel name
-        Display::fillRect(0, Theme::CONTENT_Y, Theme::SCREEN_WIDTH, 24, Theme::BG_SECONDARY);
-        Display::drawBitmap(8, Theme::CONTENT_Y + 4, Icons::CHANNEL_ICON, 16, 16, Theme::ACCENT);
-        Display::drawText(28, Theme::CONTENT_Y + 8, _channelName, Theme::WHITE, 1);
+        // Draw header with channel name - modern elevated style
+        Display::fillRect(0, Theme::CONTENT_Y, Theme::SCREEN_WIDTH, 24, Theme::BG_ELEVATED);
+        Display::drawBitmap(8, Theme::CONTENT_Y + 4, Icons::CHANNEL_ICON, 16, 16, Theme::ACCENT_PRIMARY);
+        Display::drawText(28, Theme::CONTENT_Y + 8, _channelName, Theme::TEXT_PRIMARY, 1);
 
-        // Divider
-        Display::drawHLine(0, Theme::CONTENT_Y + 24, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+        // No divider - cleaner modern look
     }
 
     drawMessages(fullRedraw);
@@ -139,129 +138,149 @@ void ChatScreen::drawMessages(bool fullRedraw) {
     Display::fillRect(0, msgY, Theme::SCREEN_WIDTH, msgHeight, Theme::BG_PRIMARY);
 
     if (_messageCount == 0) {
-        Display::drawTextCentered(0, msgY + msgHeight / 2 - 8,
+        Display::drawTextCentered(0, msgY + msgHeight / 2 - 12,
                                   Theme::SCREEN_WIDTH,
                                   "No messages yet", Theme::TEXT_SECONDARY, 1);
         Display::drawTextCentered(0, msgY + msgHeight / 2 + 4,
                                   Theme::SCREEN_WIDTH,
-                                  "Type to send", Theme::GRAY_LIGHT, 1);
+                                  "Press Type to send", Theme::TEXT_DISABLED, 1);
         return;
     }
 
-    // Start from the most recent messages and work backward
-    // We use _scrollOffset to skip the most recent N messages when scrolled
-    int startIdx = (_messageCount - 1) - _scrollOffset;
-    if (startIdx < 0) startIdx = 0;
-
-    // First pass: figure out how many messages fit by working backward
-    // For now, simpler approach: just render from startIdx going backward until we fill
-    int16_t y = msgY + 2;
-    for (int i = 0; i <= startIdx && y < maxY - 10; i++) {
-        int msgIdx = startIdx - i + _scrollOffset;
-        if (msgIdx < 0 || msgIdx >= _messageCount) continue;
-
-        // Recalculate - we want oldest to newest, so start from (startIdx - visible) and go up
-    }
-
-    // Simpler approach: calculate visible count and render oldest to newest
-    // Estimate ~3 lines per message average with wrapping
-    int estVisibleMsgs = msgHeight / 30;  // Rough estimate
+    // Calculate visible messages - estimate ~40px per bubble average
+    int estVisibleMsgs = msgHeight / 40;
     int displayStartIdx = _messageCount - estVisibleMsgs - _scrollOffset;
     if (displayStartIdx < 0) displayStartIdx = 0;
 
-    y = msgY + 2;
-    for (int i = displayStartIdx; i < _messageCount && y < maxY - 10; i++) {
+    int16_t y = msgY + 4;
+    for (int i = displayStartIdx; i < _messageCount && y < maxY - 20; i++) {
         const ChatMessage& msg = _messages[i];
 
-        // Format: "Sender: message" or "> message" for outgoing
-        char line[192];
-        if (msg.isOutgoing) {
-            snprintf(line, sizeof(line), "> %s", msg.text);
-        } else {
-            snprintf(line, sizeof(line), "%s: %s", msg.sender, msg.text);
+        // Calculate bubble dimensions
+        // Max bubble width is ~70% of screen
+        int16_t maxBubbleWidth = (Theme::SCREEN_WIDTH * 70) / 100;
+        int16_t bubblePadding = 8;
+        int16_t bubbleMargin = 8;
+
+        // Wrap text to fit bubble
+        char wrappedLines[4][64];
+        int lineCount = Theme::wrapText(msg.text, maxBubbleWidth - bubblePadding * 2, 1, wrappedLines, 4);
+
+        // Calculate actual text width (use longest line)
+        int16_t maxLineWidth = 0;
+        for (int ln = 0; ln < lineCount; ln++) {
+            int16_t lineWidth = Theme::getTextWidth(wrappedLines[ln], 1);
+            if (lineWidth > maxLineWidth) maxLineWidth = lineWidth;
         }
 
-        // Wrap text into multiple lines
-        char wrappedLines[4][64];
-        int lineCount = Theme::wrapText(line, Theme::SCREEN_WIDTH - 20, 1, wrappedLines, 4);
+        // Bubble dimensions
+        int16_t bubbleWidth = maxLineWidth + bubblePadding * 2;
+        if (bubbleWidth < 40) bubbleWidth = 40;  // Minimum width
+        int16_t bubbleHeight = lineCount * 10 + bubblePadding * 2 - 4;
 
-        // Color: outgoing = accent, incoming = white
-        uint16_t textColor = msg.isOutgoing ? Theme::ACCENT : Theme::WHITE;
+        // Position bubble based on direction
+        int16_t bubbleX;
+        uint16_t bubbleColor;
+        uint16_t textColor;
 
-        // Draw each wrapped line
-        for (int ln = 0; ln < lineCount && y < maxY - 10; ln++) {
-            Display::drawTextWithEmoji(8, y, wrappedLines[ln], textColor, 1);
+        if (msg.isOutgoing) {
+            // Outgoing: right-aligned, teal bubble
+            bubbleX = Theme::SCREEN_WIDTH - bubbleWidth - bubbleMargin;
+            bubbleColor = Theme::BUBBLE_OUTGOING;
+            textColor = Theme::WHITE;
+        } else {
+            // Incoming: left-aligned, gray bubble
+            bubbleX = bubbleMargin;
+            bubbleColor = Theme::BUBBLE_INCOMING;
+            textColor = Theme::TEXT_PRIMARY;
+
+            // Draw sender name above bubble for incoming
+            Display::drawText(bubbleX, y, msg.sender, Theme::TEXT_SECONDARY, 1);
             y += 10;
         }
 
-        // Show metadata below message
+        // Draw bubble background with rounded corners
+        Display::fillRoundRect(bubbleX, y, bubbleWidth, bubbleHeight,
+                               Theme::RADIUS_BUBBLE, bubbleColor);
+
+        // Draw message text inside bubble
+        int16_t textX = bubbleX + bubblePadding;
+        int16_t textY = y + bubblePadding - 2;
+        for (int ln = 0; ln < lineCount; ln++) {
+            Display::drawTextWithEmoji(textX, textY, wrappedLines[ln], textColor, 1);
+            textY += 10;
+        }
+
+        y += bubbleHeight + 2;
+
+        // Show metadata below bubble (small, subtle)
         if (msg.isOutgoing && msg.repeatCount > 0) {
-            // Show repeat count for outgoing messages
-            char repeatStr[24];
-            snprintf(repeatStr, sizeof(repeatStr), "  x%d repeats", msg.repeatCount);
-            Display::drawText(8, y, repeatStr, Theme::GRAY_LIGHT, 1);
+            char repeatStr[16];
+            snprintf(repeatStr, sizeof(repeatStr), "x%d", msg.repeatCount);
+            int16_t metaX = Theme::SCREEN_WIDTH - bubbleMargin - Theme::getTextWidth(repeatStr, 1);
+            Display::drawText(metaX, y, repeatStr, Theme::TEXT_DISABLED, 1);
             y += 8;
         } else if (!msg.isOutgoing && msg.hops > 0) {
-            // Show hop count for incoming messages
-            char hopStr[24];
-            snprintf(hopStr, sizeof(hopStr), "  %d hop%s", msg.hops, msg.hops > 1 ? "s" : "");
-            Display::drawText(8, y, hopStr, Theme::GRAY_LIGHT, 1);
+            char hopStr[16];
+            snprintf(hopStr, sizeof(hopStr), "%d hop%s", msg.hops, msg.hops > 1 ? "s" : "");
+            Display::drawText(bubbleMargin, y, hopStr, Theme::TEXT_DISABLED, 1);
             y += 8;
         }
 
-        y += 2;  // Gap between messages
+        y += 4;  // Gap between messages
     }
 
     // Scroll indicators
     if (_scrollOffset > 0) {
         Display::drawBitmap(Theme::SCREEN_WIDTH - 12, msgY + 2,
-                           Icons::ARROW_UP, 8, 8, Theme::GRAY_LIGHT);
+                           Icons::ARROW_UP, 8, 8, Theme::TEXT_SECONDARY);
     }
     if (displayStartIdx > 0) {
         Display::drawBitmap(Theme::SCREEN_WIDTH - 12, maxY - 10,
-                           Icons::ARROW_DOWN, 8, 8, Theme::GRAY_LIGHT);
+                           Icons::ARROW_DOWN, 8, 8, Theme::TEXT_SECONDARY);
     }
 }
 
 void ChatScreen::drawInputBar() {
     int16_t inputY = Theme::SOFTKEY_BAR_Y - 28;
 
-    // Input bar background
-    Display::fillRect(0, inputY, Theme::SCREEN_WIDTH, 28, Theme::BG_SECONDARY);
-    Display::drawHLine(0, inputY, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+    // Input bar background - modern elevated style
+    Display::fillRect(0, inputY, Theme::SCREEN_WIDTH, 28, Theme::BG_ELEVATED);
 
-    // Input field
+    // Input field with modern rounded corners
     int16_t fieldX = 8;
     int16_t fieldY = inputY + 4;
     int16_t fieldW = Theme::SCREEN_WIDTH - 16;
     int16_t fieldH = 20;
 
-    uint16_t bgColor = _inputMode ? Theme::GRAY_DARK : Theme::BG_SECONDARY;
-    uint16_t borderColor = _inputMode ? Theme::ACCENT : Theme::GRAY_MID;
+    uint16_t bgColor = _inputMode ? Theme::BG_TERTIARY : Theme::BG_ELEVATED;
+    uint16_t borderColor = _inputMode ? Theme::ACCENT_PRIMARY : Theme::BG_TERTIARY;
 
-    Display::fillRoundRect(fieldX, fieldY, fieldW, fieldH, 4, bgColor);
-    Display::drawRoundRect(fieldX, fieldY, fieldW, fieldH, 4, borderColor);
+    Display::fillRoundRect(fieldX, fieldY, fieldW, fieldH, Theme::RADIUS_MEDIUM, bgColor);
+    if (_inputMode) {
+        Display::drawRoundRect(fieldX, fieldY, fieldW, fieldH, Theme::RADIUS_MEDIUM, borderColor);
+    }
 
     // Input text or placeholder
     if (_inputPos > 0) {
         // Show input text (truncate from right if too long)
-        int maxChars = (fieldW - 8) / 6;  // 6 pixels per char
+        int maxChars = (fieldW - 12) / 6;  // 6 pixels per char
         const char* displayText = _inputBuffer;
         if (_inputPos > maxChars) {
             displayText = _inputBuffer + (_inputPos - maxChars);
         }
         // Use drawTextWithEmoji to properly render emoji glyphs
-        Display::drawTextWithEmoji(fieldX + 4, fieldY + 6, displayText, Theme::WHITE, 1);
+        Display::drawTextWithEmoji(fieldX + 6, fieldY + 6, displayText, Theme::TEXT_PRIMARY, 1);
 
         // Cursor (blinking)
         if (_inputMode && (millis() / 500) % 2 == 0) {
-            int16_t cursorX = fieldX + 4 + strlen(displayText) * 6;
-            if (cursorX < fieldX + fieldW - 4) {
-                Display::drawVLine(cursorX, fieldY + 4, fieldH - 8, Theme::WHITE);
+            int16_t cursorX = fieldX + 6 + strlen(displayText) * 6;
+            if (cursorX < fieldX + fieldW - 6) {
+                Display::drawVLine(cursorX, fieldY + 4, fieldH - 8, Theme::ACCENT_PRIMARY);
             }
         }
     } else {
-        Display::drawText(fieldX + 4, fieldY + 6, "Type message...", Theme::GRAY_LIGHT, 1);
+        Display::drawText(fieldX + 6, fieldY + 6, "Type message...", Theme::TEXT_DISABLED, 1);
     }
 }
 

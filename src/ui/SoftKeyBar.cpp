@@ -48,27 +48,32 @@ void init() {
     forceRedraw = true;
 }
 
-static void drawKey(int16_t x, int16_t w, const char* label, bool highlight, bool needsDraw) {
+static void drawKey(int16_t x, int16_t w, const char* label, bool highlight, bool needsDraw, bool isCenter) {
     if (!needsDraw) return;
 
     int16_t y = Theme::SOFTKEY_BAR_Y;
     int16_t h = Theme::SOFTKEY_BAR_HEIGHT;
 
-    // Background
-    uint16_t bgColor = highlight ? Theme::BLUE : Theme::BG_SECONDARY;
+    // Modern clean background
+    uint16_t bgColor = highlight ? Theme::ACCENT_PRIMARY : Theme::BG_ELEVATED;
     Display::fillRect(x, y, w, h, bgColor);
 
     // Label text (centered)
+    // Center key uses accent color (primary action), others use secondary
     if (label && label[0]) {
-        uint16_t textColor = highlight ? Theme::WHITE : Theme::TEXT_PRIMARY;
+        uint16_t textColor;
+        if (highlight) {
+            textColor = Theme::WHITE;
+        } else if (isCenter) {
+            textColor = Theme::ACCENT_PRIMARY;  // Primary action stands out
+        } else {
+            textColor = Theme::TEXT_SECONDARY;  // Secondary actions are subtle
+        }
         int16_t textY = y + (h - 8) / 2;  // Center text vertically
         Display::drawTextCentered(x, textY, w, label, textColor, 1);
     }
 
-    // Subtle dividers between keys
-    if (x > 0) {
-        Display::drawVLine(x, y + 4, h - 8, Theme::GRAY_MID);
-    }
+    // No dividers - cleaner modern look
 }
 
 void draw() {
@@ -95,24 +100,24 @@ void draw() {
         return;
     }
 
-    // Draw top divider line (once on full redraw)
+    // No top divider - cleaner modern look (full redraw clears background)
     if (forceRedraw) {
-        Display::drawHLine(0, Theme::SOFTKEY_BAR_Y, Theme::SCREEN_WIDTH, Theme::DIVIDER);
+        Display::fillRect(0, Theme::SOFTKEY_BAR_Y, Theme::SCREEN_WIDTH, Theme::SOFTKEY_BAR_HEIGHT, Theme::BG_ELEVATED);
     }
 
     // Draw each key section
     int16_t x = 0;
 
     // Left key
-    drawKey(x, KEY_WIDTH, leftLabel, leftHighlight, leftChanged);
+    drawKey(x, KEY_WIDTH, leftLabel, leftHighlight, leftChanged, false);
     if (leftChanged) {
         strlcpy(prevLeftLabel, leftLabel, sizeof(prevLeftLabel));
         prevLeftHighlight = leftHighlight;
     }
     x += KEY_WIDTH;
 
-    // Center key
-    drawKey(x, KEY_WIDTH, centerLabel, centerHighlight, centerChanged);
+    // Center key (primary action)
+    drawKey(x, KEY_WIDTH, centerLabel, centerHighlight, centerChanged, true);
     if (centerChanged) {
         strlcpy(prevCenterLabel, centerLabel, sizeof(prevCenterLabel));
         prevCenterHighlight = centerHighlight;
@@ -121,7 +126,7 @@ void draw() {
 
     // Right key (may be slightly wider due to rounding)
     int16_t rightWidth = Theme::SCREEN_WIDTH - x;
-    drawKey(x, rightWidth, rightLabel, rightHighlight, rightChanged);
+    drawKey(x, rightWidth, rightLabel, rightHighlight, rightChanged, false);
     if (rightChanged) {
         strlcpy(prevRightLabel, rightLabel, sizeof(prevRightLabel));
         prevRightHighlight = rightHighlight;

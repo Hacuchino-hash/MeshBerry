@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 NodakMesh (nodakmesh.org)
  *
- * BlackBerry-style home screen with icon grid
+ * Modern Apple-inspired home screen with icon grid
  */
 
 #ifndef MESHBERRY_HOMESCREEN_H
@@ -75,14 +75,14 @@ private:
     HomeMenuItem _prevSelectedItem = HOME_MESSAGES;  // Track for partial redraws
     uint8_t _badges[HOME_ITEM_COUNT] = { 0 };
 
-    // Layout (3x2 grid with wider tiles)
+    // Layout (3x2 grid with modern spacing)
     static constexpr int COLS = 3;
     static constexpr int ROWS = 2;
-    static constexpr int16_t TILE_WIDTH = 100;
-    static constexpr int16_t TILE_HEIGHT = 85;
-    static constexpr int16_t TILE_MARGIN = 5;
-    static constexpr int16_t GRID_START_X = 5;
-    static constexpr int16_t GRID_START_Y = Theme::CONTENT_Y + 5;
+    static constexpr int16_t TILE_WIDTH = 96;
+    static constexpr int16_t TILE_HEIGHT = 80;
+    static constexpr int16_t TILE_MARGIN = 8;    // More breathing room
+    static constexpr int16_t GRID_START_X = 8;   // Centered horizontally
+    static constexpr int16_t GRID_START_Y = Theme::CONTENT_Y + 8;
 };
 
 #endif // MESHBERRY_HOMESCREEN_H
