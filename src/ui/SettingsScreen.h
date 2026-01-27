@@ -25,6 +25,7 @@ enum SettingsLevel {
     SETTINGS_GPS,
     SETTINGS_POWER,
     SETTINGS_AUDIO,
+    SETTINGS_WIRELESS,
     SETTINGS_ABOUT
 };
 
@@ -61,7 +62,7 @@ private:
 
     // List view
     ListView _listView;
-    static constexpr int MAX_ITEMS = 8;
+    static constexpr int MAX_ITEMS = 10;
     ListItem _menuItems[MAX_ITEMS];
     char _valueStrings[MAX_ITEMS][32];  // Buffer for dynamic value strings
     int _menuItemCount = 0;

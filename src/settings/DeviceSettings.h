@@ -76,7 +76,15 @@ struct DeviceSettings {
     AlertTone toneSent = TONE_CHIRP;            // Message sent confirmation
     AlertTone toneError = TONE_DESCENDING;      // Error occurred
 
-    uint8_t reserved[4] = {0};          // Future expansion (reduced from 8)
+    // Bluetooth settings
+    bool bleEnabled = true;             // BLE companion interface enabled (TODO: change to false before release)
+    uint32_t blePin = 123456;           // 6-digit BLE pairing PIN
+
+    // WiFi settings
+    bool wifiEnabled = false;           // WiFi enabled
+    char wifiSSID[33] = "";             // WiFi network name (max 32 chars)
+    char wifiPassword[65] = "";         // WiFi password (max 64 chars)
+    bool ntpEnabled = true;             // Auto NTP time sync when WiFi connected
 
     void setDefaults() {
         magic = DEVICE_MAGIC;
@@ -98,7 +106,13 @@ struct DeviceSettings {
         toneSent = TONE_CHIRP;
         toneError = TONE_DESCENDING;
 
-        memset(reserved, 0, sizeof(reserved));
+        // Wireless defaults
+        bleEnabled = true;  // TODO: change to false before release
+        blePin = 123456;
+        wifiEnabled = false;
+        memset(wifiSSID, 0, sizeof(wifiSSID));
+        memset(wifiPassword, 0, sizeof(wifiPassword));
+        ntpEnabled = true;
     }
 
     bool isValid() const {

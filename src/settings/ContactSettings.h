@@ -53,6 +53,11 @@ struct ContactEntry {
     uint8_t manualPath[8];      // Manual path via repeater IDs (up to 8 hops)
     uint8_t manualPathLen;      // Length of manual path
 
+    // Location from last advertisement
+    bool hasLocation;
+    float latitude;
+    float longitude;
+
     void clear() {
         id = 0;
         name[0] = '\0';
@@ -72,6 +77,10 @@ struct ContactEntry {
         routingMode = DM_ROUTE_AUTO;
         memset(manualPath, 0, sizeof(manualPath));
         manualPathLen = 0;
+        // Clear location
+        hasLocation = false;
+        latitude = 0.0f;
+        longitude = 0.0f;
     }
 
     bool hasSavedPassword() const {
@@ -120,6 +129,9 @@ struct ContactSettings {
 
     // Find contact by full public key (32 bytes) - prevents duplicates
     int findContactByPubKey(const uint8_t* pubKey) const;
+
+    // Find contact by public key prefix (for BLE companion protocol)
+    int findContactByPubKeyPrefix(const uint8_t* prefix, int prefixLen) const;
 
     // Find contact by name prefix
     int findContactByName(const char* namePrefix) const;

@@ -112,6 +112,9 @@ void MeshBerryMesh::loop() {
 
     // Check for DM delivery timeouts
     checkPendingTimeouts();
+
+    // Check companion interface (BLE/WiFi)
+    checkCompanionInterface();
 }
 
 void MeshBerryMesh::setNodeName(const char* name) {
@@ -320,8 +323,12 @@ void MeshBerryMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id,
     if (app_data && app_data_len > 0) {
         AdvertDataParser parser(app_data, app_data_len);
 
-        Serial.printf("[MESH] Parser: isValid=%d, type=%d, hasName=%d\n",
-                      parser.isValid(), parser.getType(), parser.hasName());
+        Serial.printf("[MESH] Parser: isValid=%d, type=%d, hasName=%d, hasLoc=%d\n",
+                      parser.isValid(), parser.getType(), parser.hasName(), parser.hasLatLon());
+        if (parser.hasLatLon()) {
+            Serial.printf("[MESH] Location from advert: lat=%.6f, lon=%.6f\n",
+                          parser.getLat(), parser.getLon());
+        }
 
         if (parser.isValid()) {
             // Extract node type (lower 4 bits)
@@ -586,6 +593,18 @@ void MeshBerryMesh::onAckRecv(mesh::Packet* packet, uint32_t ack_crc) {
                               packet->path_len);
             }
 
+            // Push delivery confirmation to companion app (PUSH_CODE_SEND_CONFIRMED = 0x82)
+            if (_companionSerial && _companionSerial->isConnected()) {
+                uint8_t pushFrame[9];
+                pushFrame[0] = 0x82;  // PUSH_CODE_SEND_CONFIRMED
+                memcpy(&pushFrame[1], &ack_crc, 4);
+                uint32_t tripTime = millis() - _pendingDMs[i].sentAt;
+                memcpy(&pushFrame[5], &tripTime, 4);
+                _companionSerial->writeFrame(pushFrame, 9);
+                Serial.printf("[COMPANION] Pushed delivery ACK to app: %08X (trip=%lums)\n",
+                              ack_crc, tripTime);
+            }
+
             // Mark as inactive and notify UI
             uint32_t contactId = _pendingDMs[i].contactId;
             uint8_t attempts = _pendingDMs[i].attempts;
@@ -693,6 +712,18 @@ bool MeshBerryMesh::filterRecvFloodPacket(mesh::Packet* packet) {
                             if (_repeatCallback) {
                                 _repeatCallback(ch, receivedHash, _channelStats[i].repeatCount);
                             }
+
+                            // Push repeat notification to companion app
+                            if (_companionSerial && _companionSerial->isConnected()) {
+                                uint8_t pushFrame[9];
+                                pushFrame[0] = 0x82;  // PUSH_CODE_SEND_CONFIRMED
+                                memcpy(&pushFrame[1], &receivedHash, 4);
+                                uint32_t repeatCount = (uint32_t)_channelStats[i].repeatCount;
+                                memcpy(&pushFrame[5], &repeatCount, 4);
+                                _companionSerial->writeFrame(pushFrame, 9);
+                                Serial.printf("[COMPANION] Pushed repeat %d for hash %08X\n",
+                                              _channelStats[i].repeatCount, receivedHash);
+                            }
                         }
                         break;
                     }
@@ -749,10 +780,37 @@ void MeshBerryMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const me
         // the duplicate filter, so we don't call checkChannelRepeat() here anymore
 
         // Call channel message callback for UI notification
+        uint8_t hops = packet->isRouteFlood() ? packet->path_len : 0xFF;
         if (_channelMsgCallback && channelIdx >= 0) {
-            // Get hop count from packet path_len (only for flood-routed packets)
-            uint8_t hops = packet->isRouteFlood() ? packet->path_len : 0;
-            _channelMsgCallback(channelIdx, textBuf, timestamp, hops);
+            _channelMsgCallback(channelIdx, textBuf, timestamp, hops == 0xFF ? 0 : hops);
+        }
+
+        // Build message frame for companion app queue
+        // Format: [RESP_CODE(1)][SNR(1)][res1(1)][res2(1)][ch_idx(1)][path_len(1)][txt_type(1)][timestamp(4)][text(N)]
+        uint8_t msgFrame[MAX_FRAME_SIZE];
+        int fi = 0;
+        msgFrame[fi++] = 17;  // RESP_CODE_CHANNEL_MSG_RECV_V3
+        msgFrame[fi++] = (int8_t)(packet->getSNR() * 4);
+        msgFrame[fi++] = 0;   // reserved1
+        msgFrame[fi++] = 0;   // reserved2
+        msgFrame[fi++] = channelIdx >= 0 ? channelIdx : 0;
+        msgFrame[fi++] = hops;  // path_len (0xFF for non-flood)
+        msgFrame[fi++] = 0;   // TXT_TYPE_PLAIN
+        memcpy(&msgFrame[fi], &timestamp, 4);
+        fi += 4;
+        int frameTextLen = strlen(textBuf);
+        if (fi + frameTextLen > MAX_FRAME_SIZE) frameTextLen = MAX_FRAME_SIZE - fi;
+        memcpy(&msgFrame[fi], textBuf, frameTextLen);
+        fi += frameTextLen;
+
+        addToOfflineQueue(msgFrame, fi, true);
+
+        // Push notification to companion app that a message is waiting
+        if (_companionSerial && _companionSerial->isConnected()) {
+            uint8_t pushFrame[1];
+            pushFrame[0] = 0x83;  // PUSH_CODE_MSG_WAITING
+            _companionSerial->writeFrame(pushFrame, 1);
+            Serial.println("[COMPANION] Pushed MSG_WAITING to app");
         }
 
         // Also add to general message history
@@ -1275,6 +1333,14 @@ void MeshBerryMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sende
 
             if (_dmCallback) {
                 _dmCallback(_dmPeers[dmIdx].contactId, senderName, text, timestamp);
+            }
+
+            // Push notification to companion app that a DM is waiting
+            if (_companionSerial && _companionSerial->isConnected()) {
+                uint8_t pushFrame[1];
+                pushFrame[0] = 0x83;  // PUSH_CODE_MSG_WAITING
+                _companionSerial->writeFrame(pushFrame, 1);
+                Serial.println("[COMPANION] Pushed MSG_WAITING (DM) to app");
             }
 
             // === SEND ACK ===
@@ -1838,6 +1904,694 @@ void MeshBerryMesh::checkPendingTimeouts() {
             }
         }
     }
+}
+
+// =============================================================================
+// COMPANION INTERFACE (BLE/WiFi)
+// =============================================================================
+
+void MeshBerryMesh::startCompanionInterface(BaseSerialInterface& serial) {
+    _companionSerial = &serial;
+    serial.enable();
+    Serial.println("[MESH] Companion interface started");
+}
+
+void MeshBerryMesh::checkCompanionInterface() {
+    if (!_companionSerial) return;
+
+    // FIRST: Check for incoming frames AND drain send queue
+    // checkRecvFrame() also transmits one queued frame per call
+    size_t len = _companionSerial->checkRecvFrame(_companionFrame);
+    if (len > 0) {
+        Serial.printf("[COMPANION] Received frame: %d bytes\n", len);
+        handleCompanionFrame(len);
+    }
+
+    // THEN: Process contact iterator if active (send one contact per loop when not busy)
+    if (_contactIterActive && !_companionSerial->isWriteBusy()) {
+        ContactSettings& contacts = SettingsManager::getContactSettings();
+
+        // Find next active contact - iterate over FULL array (contacts may be sparse)
+        while (_contactIterIndex < ContactSettings::MAX_CONTACTS) {
+            const ContactEntry* c = contacts.getContact(_contactIterIndex);
+            _contactIterIndex++;
+
+            if (c && c->isActive) {
+                Serial.printf("[COMPANION] Sending contact %d: %s\n", _contactIterIndex - 1, c->name);
+                writeContactFrame(c);
+                return;  // One contact per loop iteration
+            }
+        }
+
+        // Iterator done - send END_OF_CONTACTS
+        const uint8_t RESP_CODE_END_OF_CONTACTS = 4;
+        _companionOutFrame[0] = RESP_CODE_END_OF_CONTACTS;
+        uint32_t lastmod = 0;
+        memcpy(&_companionOutFrame[1], &lastmod, 4);
+        _companionSerial->writeFrame(_companionOutFrame, 5);
+        Serial.println("[COMPANION] Contacts sync complete");
+
+        _contactIterActive = false;
+    }
+}
+
+bool MeshBerryMesh::isCompanionConnected() const {
+    return _companionSerial && _companionSerial->isConnected();
+}
+
+void MeshBerryMesh::writeContactFrame(const ContactEntry* contact) {
+    // Response code for RESP_CODE_CONTACT
+    const uint8_t RESP_CODE_CONTACT = 3;
+
+    int i = 0;
+    _companionOutFrame[i++] = RESP_CODE_CONTACT;
+
+    // 32-byte public key
+    memcpy(&_companionOutFrame[i], contact->pubKey, 32);
+    i += 32;
+
+    // Type
+    _companionOutFrame[i++] = contact->type;
+
+    // Flags (favorite = 0x01)
+    uint8_t flags = contact->isFavorite ? 0x01 : 0x00;
+    _companionOutFrame[i++] = flags;
+
+    // Path length (max 64 = MAX_PATH_SIZE)
+    uint8_t pathLen = (contact->outPathLen < 0) ? 0 :
+                      (contact->outPathLen > 64 ? 64 : contact->outPathLen);
+    _companionOutFrame[i++] = pathLen;
+
+    // Path (64 bytes = MAX_PATH_SIZE, zero-padded)
+    memset(&_companionOutFrame[i], 0, 64);
+    if (pathLen > 0) {
+        memcpy(&_companionOutFrame[i], contact->outPath, pathLen);
+    }
+    i += 64;
+
+    // Name (32 bytes, null-padded)
+    memset(&_companionOutFrame[i], 0, 32);
+    strncpy((char*)&_companionOutFrame[i], contact->name, 31);
+    i += 32;
+
+    // Last advertisement timestamp (4 bytes)
+    uint32_t advertTs = contact->lastHeard;
+    memcpy(&_companionOutFrame[i], &advertTs, 4);
+    i += 4;
+
+    // GPS lat/lon (4 bytes each, stored as int32 * 1E6)
+    int32_t lat = contact->hasLocation ? (int32_t)(contact->latitude * 1000000) : 0;
+    int32_t lon = contact->hasLocation ? (int32_t)(contact->longitude * 1000000) : 0;
+    if (contact->hasLocation) {
+        Serial.printf("[CONTACT SYNC] %s: lat=%d, lon=%d (hasLoc=1)\n",
+                      contact->name, lat, lon);
+    }
+    memcpy(&_companionOutFrame[i], &lat, 4);
+    i += 4;
+    memcpy(&_companionOutFrame[i], &lon, 4);
+    i += 4;
+
+    // Last modified timestamp (4 bytes)
+    uint32_t lastmod = contact->lastHeard;
+    memcpy(&_companionOutFrame[i], &lastmod, 4);
+    i += 4;
+
+    _companionSerial->writeFrame(_companionOutFrame, i);
+}
+
+void MeshBerryMesh::handleCompanionFrame(size_t len) {
+    if (len == 0 || !_companionSerial) return;
+
+    // MeshCore companion protocol command codes
+    // See: MeshCore/examples/companion_radio/MyMesh.cpp
+    const uint8_t CMD_APP_START = 1;
+    const uint8_t CMD_SEND_TXT_MSG = 2;           // Send DM
+    const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;   // Send channel message
+    const uint8_t CMD_GET_CONTACTS = 4;
+    const uint8_t CMD_SET_DEVICE_TIME = 6;
+    const uint8_t CMD_SYNC_NEXT_MESSAGE = 10;
+    const uint8_t CMD_GET_BATT_AND_STORAGE = 20;
+    const uint8_t CMD_DEVICE_QUERY = 22;
+    const uint8_t CMD_GET_CHANNEL = 31;
+    const uint8_t CMD_SET_CHANNEL = 32;
+    const uint8_t CMD_SEND_TRACE_PATH = 36;
+    const uint8_t CMD_SET_FLOOD_SCOPE = 54;  // v8+ - 0x36 in hex
+
+    // Response codes
+    const uint8_t RESP_CODE_OK = 0;
+    const uint8_t RESP_CODE_ERR = 1;
+    const uint8_t RESP_CODE_CONTACTS_START = 2;
+    const uint8_t RESP_CODE_CONTACT = 3;
+    const uint8_t RESP_CODE_END_OF_CONTACTS = 4;
+    const uint8_t RESP_CODE_SELF_INFO = 5;
+    const uint8_t RESP_CODE_SENT = 6;             // Message sent response
+    const uint8_t RESP_CODE_NO_MORE_MESSAGES = 10;
+    const uint8_t RESP_CODE_BATT_AND_STORAGE = 12;
+    const uint8_t RESP_CODE_DEVICE_INFO = 13;
+    const uint8_t RESP_CODE_CHANNEL_INFO = 18;
+
+    // Error codes
+    const uint8_t ERR_CODE_UNSUPPORTED_CMD = 1;
+    const uint8_t ERR_CODE_NOT_FOUND = 2;
+    const uint8_t ERR_CODE_TABLE_FULL = 3;
+    const uint8_t ERR_CODE_ILLEGAL_ARG = 4;
+
+    // Firmware version info
+    const uint8_t FIRMWARE_VER_CODE = 1;  // MeshBerry firmware version code
+    const char* FIRMWARE_BUILD_DATE = __DATE__;
+    const char* FIRMWARE_VERSION = "MeshBerry v1.0";
+    const char* MANUFACTURER_NAME = "NodakMesh";
+
+    uint8_t cmd = _companionFrame[0];
+    Serial.printf("[COMPANION] Command: 0x%02X\n", cmd);
+
+    if (cmd == CMD_DEVICE_QUERY && len >= 2) {
+        // App is asking what device this is
+        uint8_t app_ver = _companionFrame[1];
+        Serial.printf("[COMPANION] Device query from app v%d\n", app_ver);
+
+        int i = 0;
+        _companionOutFrame[i++] = RESP_CODE_DEVICE_INFO;
+        _companionOutFrame[i++] = FIRMWARE_VER_CODE;
+        _companionOutFrame[i++] = MAX_NODES / 2;  // Max contacts
+        _companionOutFrame[i++] = MAX_CHANNELS;   // Max channels
+
+        // BLE PIN (4 bytes)
+        uint32_t pin = 123456;  // TODO: Get from settings
+        memcpy(&_companionOutFrame[i], &pin, 4);
+        i += 4;
+
+        // Build date (12 bytes)
+        memset(&_companionOutFrame[i], 0, 12);
+        strncpy((char*)&_companionOutFrame[i], FIRMWARE_BUILD_DATE, 11);
+        i += 12;
+
+        // Manufacturer name (40 bytes)
+        memset(&_companionOutFrame[i], 0, 40);
+        strncpy((char*)&_companionOutFrame[i], MANUFACTURER_NAME, 39);
+        i += 40;
+
+        // Firmware version (20 bytes)
+        memset(&_companionOutFrame[i], 0, 20);
+        strncpy((char*)&_companionOutFrame[i], FIRMWARE_VERSION, 19);
+        i += 20;
+
+        _companionSerial->writeFrame(_companionOutFrame, i);
+        Serial.printf("[COMPANION] Sent device info (%d bytes)\n", i);
+
+    } else if (cmd == CMD_APP_START && len >= 8) {
+        // App is starting connection, respond with node identity
+        const char* appName = (const char*)&_companionFrame[8];
+        Serial.printf("[COMPANION] App '%s' connected\n", appName);
+
+        int i = 0;
+        _companionOutFrame[i++] = RESP_CODE_SELF_INFO;
+        _companionOutFrame[i++] = ADV_TYPE_CHAT;  // Node type
+        _companionOutFrame[i++] = 20;  // TX power (dBm) - TODO: from settings
+        _companionOutFrame[i++] = 22;  // Max TX power
+
+        // Our public key (32 bytes)
+        memcpy(&_companionOutFrame[i], self_id.pub_key, PUB_KEY_SIZE);
+        i += PUB_KEY_SIZE;
+
+        // Location (lat/lon as int32 * 1000000)
+        int32_t lat = 0, lon = 0;  // TODO: Get from GPS if available
+        memcpy(&_companionOutFrame[i], &lat, 4);
+        i += 4;
+        memcpy(&_companionOutFrame[i], &lon, 4);
+        i += 4;
+
+        // Settings bytes
+        _companionOutFrame[i++] = 0;  // multi_acks
+        _companionOutFrame[i++] = 0;  // advert_loc_policy
+        _companionOutFrame[i++] = 0;  // telemetry_mode
+        _companionOutFrame[i++] = 0;  // manual_add_contacts
+
+        // Radio settings
+        uint32_t freq = 915000;  // 915 MHz in kHz
+        memcpy(&_companionOutFrame[i], &freq, 4);
+        i += 4;
+        uint32_t bw = 250000;  // 250 kHz in Hz
+        memcpy(&_companionOutFrame[i], &bw, 4);
+        i += 4;
+        _companionOutFrame[i++] = 10;  // SF
+        _companionOutFrame[i++] = 5;   // CR
+
+        // Node name
+        int nameLen = strlen(_nodeName);
+        memcpy(&_companionOutFrame[i], _nodeName, nameLen);
+        i += nameLen;
+
+        _companionSerial->writeFrame(_companionOutFrame, i);
+        Serial.printf("[COMPANION] Sent self info (%d bytes)\n", i);
+
+    } else if (cmd == CMD_GET_CONTACTS) {
+        // App is requesting all contacts - start iterator
+        Serial.println("[COMPANION] Getting contacts...");
+
+        // Get contacts from SettingsManager
+        ContactSettings& contacts = SettingsManager::getContactSettings();
+
+        // Count active contacts - iterate over FULL array (contacts may be sparse)
+        int contactCount = 0;
+        for (int i = 0; i < ContactSettings::MAX_CONTACTS; i++) {
+            const ContactEntry* c = contacts.getContact(i);
+            if (c && c->isActive) contactCount++;
+        }
+
+        // Send RESP_CODE_CONTACTS_START with count
+        _companionOutFrame[0] = RESP_CODE_CONTACTS_START;
+        memcpy(&_companionOutFrame[1], &contactCount, 4);
+        _companionSerial->writeFrame(_companionOutFrame, 5);
+        Serial.printf("[COMPANION] Starting contact sync (%d contacts)\n", contactCount);
+
+        // Start iterator - contacts will be sent one at a time in checkCompanionInterface()
+        _contactIterActive = true;
+        _contactIterIndex = 0;
+
+    } else if (cmd == CMD_GET_CHANNEL && len >= 2) {
+        // App is requesting channel info
+        uint8_t channelIdx = _companionFrame[1];
+        Serial.printf("[COMPANION] Get channel %d\n", channelIdx);
+
+        ChannelSettings& channels = SettingsManager::getChannelSettings();
+        if (channelIdx < MAX_CHANNELS && channels.channels[channelIdx].isActive) {
+            const ChannelEntry& ch = channels.channels[channelIdx];
+            _companionOutFrame[0] = RESP_CODE_CHANNEL_INFO;
+            _companionOutFrame[1] = channelIdx;
+            // Name (32 bytes)
+            memset(&_companionOutFrame[2], 0, 32);
+            strncpy((char*)&_companionOutFrame[2], ch.name, 31);
+            // Secret (16 bytes - app only supports 128-bit)
+            memcpy(&_companionOutFrame[34], ch.secret, 16);
+            _companionSerial->writeFrame(_companionOutFrame, 50);
+            Serial.printf("[COMPANION] Sent channel '%s'\n", ch.name);
+        } else {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+        }
+
+    } else if (cmd == CMD_SET_CHANNEL && len >= 50) {
+        // App is setting/updating a channel
+        uint8_t channelIdx = _companionFrame[1];
+        Serial.printf("[COMPANION] Set channel %d\n", channelIdx);
+
+        if (channelIdx < MAX_CHANNELS) {
+            ChannelSettings& channels = SettingsManager::getChannelSettings();
+            ChannelEntry& ch = channels.channels[channelIdx];
+
+            // Copy name (32 bytes)
+            memset(ch.name, 0, sizeof(ch.name));
+            memcpy(ch.name, &_companionFrame[2], 31);
+            // Copy secret (16 bytes)
+            memcpy(ch.secret, &_companionFrame[34], 16);
+            ch.secretLen = 16;
+            ch.isActive = true;
+            ch.isHashtag = false;
+
+            SettingsManager::save();  // Save all settings including channels
+
+            _companionOutFrame[0] = RESP_CODE_OK;
+            _companionSerial->writeFrame(_companionOutFrame, 1);
+            Serial.printf("[COMPANION] Channel '%s' saved\n", ch.name);
+        } else {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+        }
+
+    } else if (cmd == CMD_SYNC_NEXT_MESSAGE) {
+        // App is asking for the next queued message
+        int outLen = getFromOfflineQueue(_companionOutFrame);
+        if (outLen > 0) {
+            _companionSerial->writeFrame(_companionOutFrame, outLen);
+            Serial.printf("[COMPANION] Sent queued message (%d bytes, %d remaining)\n",
+                          outLen, _offlineQueueLen);
+        } else {
+            _companionOutFrame[0] = RESP_CODE_NO_MORE_MESSAGES;
+            _companionSerial->writeFrame(_companionOutFrame, 1);
+            Serial.println("[COMPANION] No more messages in queue");
+        }
+
+    } else if (cmd == CMD_GET_BATT_AND_STORAGE) {
+        // App is requesting battery voltage and storage info
+        Serial.println("[COMPANION] Battery and storage query");
+
+        int i = 0;
+        _companionOutFrame[i++] = RESP_CODE_BATT_AND_STORAGE;
+
+        // Battery millivolts (2 bytes) - T-Deck doesn't have battery monitoring
+        // Return 0 to indicate not available
+        uint16_t battery_millivolts = 0;  // TODO: Get from board if available
+        memcpy(&_companionOutFrame[i], &battery_millivolts, 2);
+        i += 2;
+
+        // Storage used KB (4 bytes)
+        uint32_t used = 0;  // TODO: Calculate from SPIFFS/LittleFS if needed
+        memcpy(&_companionOutFrame[i], &used, 4);
+        i += 4;
+
+        // Storage total KB (4 bytes)
+        uint32_t total = 4096;  // 4MB typical for ESP32 partition
+        memcpy(&_companionOutFrame[i], &total, 4);
+        i += 4;
+
+        _companionSerial->writeFrame(_companionOutFrame, i);
+        Serial.printf("[COMPANION] Sent battery/storage info (%d bytes)\n", i);
+
+    } else if (cmd == CMD_SET_DEVICE_TIME && len >= 5) {
+        // App is setting device time from phone
+        uint32_t secs;
+        memcpy(&secs, &_companionFrame[1], 4);
+        Serial.printf("[COMPANION] Set device time: %lu\n", secs);
+
+        // Update RTC clock - always accept to unblock sync flow
+        getRTCClock()->setCurrentTime(secs);
+        _companionOutFrame[0] = RESP_CODE_OK;
+        _companionSerial->writeFrame(_companionOutFrame, 1);
+        Serial.println("[COMPANION] Time updated OK");
+
+    } else if (cmd == CMD_SEND_TXT_MSG && len >= 14) {
+        // App is sending a direct message
+        // Frame: [cmd(1)][txt_type(1)][attempt(1)][timestamp(4)][pub_key_prefix(6)][text(N)]
+        uint8_t txt_type = _companionFrame[1];
+        uint8_t attempt = _companionFrame[2];
+        uint32_t msg_timestamp;
+        memcpy(&msg_timestamp, &_companionFrame[3], 4);
+        uint8_t* pub_key_prefix = &_companionFrame[7];
+        const char* text = (const char*)&_companionFrame[13];
+        size_t textLen = len - 13;
+
+        Serial.printf("[COMPANION] Send DM: type=%d, attempt=%d, ts=%lu\n",
+                      txt_type, attempt, msg_timestamp);
+
+        // Only support plain text messages (txt_type = 0)
+        if (txt_type != 0) {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_UNSUPPORTED_CMD;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            return;
+        }
+
+        // Find contact by public key prefix (first 6 bytes)
+        ContactSettings& contacts = SettingsManager::getContactSettings();
+        int contactIdx = contacts.findContactByPubKeyPrefix(pub_key_prefix, 6);
+        if (contactIdx < 0) {
+            Serial.println("[COMPANION] Recipient not found");
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            return;
+        }
+
+        const ContactEntry* contact = contacts.getContact(contactIdx);
+
+        // Null-terminate the text
+        char msgText[256];
+        size_t copyLen = textLen < 255 ? textLen : 255;
+        memcpy(msgText, text, copyLen);
+        msgText[copyLen] = '\0';
+
+        Serial.printf("[COMPANION] Sending to %s: \"%s\"\n", contact->name, msgText);
+
+        // Send the message using existing mesh function
+        uint32_t ack_crc = 0;
+        bool sent = sendDirectMessage(contact->id, msgText, &ack_crc);
+
+        if (sent) {
+            // Respond with RESP_CODE_SENT
+            int i = 0;
+            _companionOutFrame[i++] = RESP_CODE_SENT;
+            _companionOutFrame[i++] = 0;  // is_flood (0 = direct)
+            memcpy(&_companionOutFrame[i], &ack_crc, 4);  // expected_ack
+            i += 4;
+            uint32_t timeout = 20000;  // 20 second timeout
+            memcpy(&_companionOutFrame[i], &timeout, 4);
+            i += 4;
+            _companionSerial->writeFrame(_companionOutFrame, i);
+            Serial.printf("[COMPANION] Message sent, ack_crc=%08X\n", ack_crc);
+        } else {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_TABLE_FULL;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+        }
+
+    } else if (cmd == CMD_SEND_CHANNEL_TXT_MSG && len >= 8) {
+        // App is sending a channel message
+        // Frame: [cmd(1)][txt_type(1)][channel_idx(1)][timestamp(4)][text(N)]
+        uint8_t txt_type = _companionFrame[1];
+        uint8_t channel_idx = _companionFrame[2];
+        uint32_t msg_timestamp;
+        memcpy(&msg_timestamp, &_companionFrame[3], 4);
+        const char* text = (const char*)&_companionFrame[7];
+        size_t textLen = len - 7;
+
+        Serial.printf("[COMPANION] Send channel msg: ch=%d, type=%d, len=%d, textLen=%d\n",
+                      channel_idx, txt_type, len, (int)textLen);
+
+        // Debug: Show available channels
+        ChannelSettings& chSettings = SettingsManager::getChannelSettings();
+        Serial.printf("[COMPANION] numChannels=%d, MAX_CHANNELS=%d\n",
+                      chSettings.numChannels, MAX_CHANNELS);
+        for (int i = 0; i < chSettings.numChannels && i < MAX_CHANNELS; i++) {
+            if (chSettings.channels[i].isActive) {
+                Serial.printf("[COMPANION]   Channel[%d]: '%s' active=%d\n",
+                              i, chSettings.channels[i].name, chSettings.channels[i].isActive);
+            }
+        }
+
+        // Validate channel index before calling sendToChannel
+        if (channel_idx >= MAX_CHANNELS) {
+            Serial.printf("[COMPANION] Channel index %d >= MAX_CHANNELS %d\n", channel_idx, MAX_CHANNELS);
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            return;
+        }
+        if (!chSettings.channels[channel_idx].isActive) {
+            Serial.printf("[COMPANION] Channel %d is not active\n", channel_idx);
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            return;
+        }
+
+        // Only support plain text
+        if (txt_type != 0) {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_UNSUPPORTED_CMD;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            return;
+        }
+
+        // Null-terminate text
+        char msgText[256];
+        size_t copyLen = textLen < 255 ? textLen : 255;
+        memcpy(msgText, text, copyLen);
+        msgText[copyLen] = '\0';
+
+        Serial.printf("[COMPANION] Channel %d: \"%s\"\n", channel_idx, msgText);
+
+        // Send using existing mesh function
+        bool sent = sendToChannel(channel_idx, msgText);
+
+        if (sent) {
+            _companionOutFrame[0] = RESP_CODE_OK;
+            _companionSerial->writeFrame(_companionOutFrame, 1);
+            Serial.println("[COMPANION] Channel message sent");
+        } else {
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_NOT_FOUND;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+        }
+
+    } else if (cmd == CMD_SEND_TRACE_PATH && len >= 2) {
+        // App is requesting a trace path to a node
+        // Frame: [cmd(1)][channel_idx(1)] for len=2, or full trace with path data for len>10
+        Serial.printf("[COMPANION] Trace path request: len=%d\n", len);
+
+        if (len == 2) {
+            // Short form - just channel index, app might be checking if we support this
+            uint8_t channel_idx = _companionFrame[1];
+            Serial.printf("[COMPANION] Trace path probe for channel %d\n", channel_idx);
+            // Acknowledge the request
+            _companionOutFrame[0] = RESP_CODE_OK;
+            _companionSerial->writeFrame(_companionOutFrame, 1);
+        } else if (len > 10) {
+            // Full trace request: [cmd(1)][tag(4)][auth(4)][flags(1)][path(N)]
+            uint8_t path_len = len - 10;
+            uint8_t flags = _companionFrame[9];
+            uint8_t path_sz = flags & 0x03;  // Path size encoding
+
+            Serial.printf("[COMPANION] Full trace: path_len=%d, flags=0x%02X, path_sz=%d\n",
+                          path_len, flags, path_sz);
+
+            // Validate path parameters
+            if (path_len == 0 || (path_len >> path_sz) > 64 ||
+                (path_sz > 0 && (path_len % (1 << path_sz)) != 0)) {
+                Serial.println("[COMPANION] Invalid trace path parameters");
+                _companionOutFrame[0] = RESP_CODE_ERR;
+                _companionOutFrame[1] = ERR_CODE_ILLEGAL_ARG;
+                _companionSerial->writeFrame(_companionOutFrame, 2);
+                return;
+            }
+
+            uint32_t tag, auth;
+            memcpy(&tag, &_companionFrame[1], 4);
+            memcpy(&auth, &_companionFrame[5], 4);
+
+            Serial.printf("[COMPANION] Trace request: tag=%08X, path_len=%d\n", tag, path_len);
+
+            // Create and send trace packet via mesh
+            auto pkt = createTrace(tag, auth, flags);
+            if (pkt) {
+                sendDirect(pkt, &_companionFrame[10], path_len);
+
+                // Calculate estimated timeout based on path length and airtime
+                uint32_t airtime = _radio->getEstAirtimeFor(pkt->payload_len + path_len + 2);
+                uint32_t hops = path_len >> path_sz;
+                uint32_t est_timeout = airtime * hops * 3;  // Rough estimate: 3x airtime per hop
+                if (est_timeout < 5000) est_timeout = 5000;  // Minimum 5 seconds
+
+                // Send ACK with tag and timeout
+                _companionOutFrame[0] = RESP_CODE_SENT;
+                _companionOutFrame[1] = 0;
+                memcpy(&_companionOutFrame[2], &tag, 4);
+                memcpy(&_companionOutFrame[6], &est_timeout, 4);
+                _companionSerial->writeFrame(_companionOutFrame, 10);
+                Serial.printf("[COMPANION] Trace sent, est_timeout=%d ms\n", est_timeout);
+            } else {
+                Serial.println("[COMPANION] Failed to create trace packet");
+                _companionOutFrame[0] = RESP_CODE_ERR;
+                _companionOutFrame[1] = ERR_CODE_TABLE_FULL;
+                _companionSerial->writeFrame(_companionOutFrame, 2);
+            }
+        } else {
+            // Invalid length
+            _companionOutFrame[0] = RESP_CODE_ERR;
+            _companionOutFrame[1] = ERR_CODE_ILLEGAL_ARG;
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+        }
+
+    } else if (cmd == CMD_SET_FLOOD_SCOPE && len >= 2) {
+        // App is setting/querying the flood scope for messages (v8+)
+        // Frame: [cmd(1)][scope(1)]
+        // scope: 0 = get current, 1+ = set flood scope
+        uint8_t scope = _companionFrame[1];
+        Serial.printf("[COMPANION] Flood scope request: scope=%d\n", scope);
+
+        if (scope == 0) {
+            // Query current flood scope - return current value
+            _companionOutFrame[0] = RESP_CODE_OK;
+            _companionOutFrame[1] = 3;  // Default flood scope
+            _companionSerial->writeFrame(_companionOutFrame, 2);
+            Serial.println("[COMPANION] Returned current flood scope: 3");
+        } else {
+            // Set new flood scope
+            // TODO: Actually store/use this value in mesh routing
+            _companionOutFrame[0] = RESP_CODE_OK;
+            _companionSerial->writeFrame(_companionOutFrame, 1);
+            Serial.printf("[COMPANION] Flood scope set to %d\n", scope);
+        }
+
+    } else {
+        // Unknown or unhandled command - log for debugging
+        Serial.printf("[COMPANION] Unhandled command 0x%02X (len=%d)\n", cmd, len);
+        Serial.print("[COMPANION] Frame data: ");
+        for (size_t j = 0; j < len && j < 16; j++) {
+            Serial.printf("%02X ", _companionFrame[j]);
+        }
+        Serial.println();
+    }
+}
+
+// =============================================================================
+// TRACE ROUTE HANDLING
+// =============================================================================
+
+void MeshBerryMesh::onTraceRecv(mesh::Packet* packet, uint32_t tag, uint32_t auth_code,
+                                 uint8_t flags, const uint8_t* path_snrs,
+                                 const uint8_t* path_hashes, uint8_t path_len) {
+    Serial.printf("[TRACE] Received trace response: tag=%08X, hops=%d\n", tag, path_len);
+
+    // Only forward to companion if connected
+    if (!_companionSerial || !_companionSerial->isConnected()) {
+        Serial.println("[TRACE] No companion connected, dropping trace data");
+        return;
+    }
+
+    const uint8_t PUSH_CODE_TRACE_DATA = 0x89;
+    uint8_t path_sz = flags & 0x03;
+    uint8_t snr_count = path_len >> path_sz;
+
+    // Check if response fits in frame buffer
+    // Format: [0x89][0][path_len][flags][tag(4)][auth(4)][path_hashes(N)][path_snrs(M)][final_snr]
+    size_t frame_size = 12 + path_len + snr_count + 1;
+    if (frame_size > sizeof(_companionOutFrame)) {
+        Serial.println("[TRACE] Path too long for response frame");
+        return;
+    }
+
+    // Build push frame for companion app
+    int i = 0;
+    _companionOutFrame[i++] = PUSH_CODE_TRACE_DATA;
+    _companionOutFrame[i++] = 0;  // reserved
+    _companionOutFrame[i++] = path_len;
+    _companionOutFrame[i++] = flags;
+    memcpy(&_companionOutFrame[i], &tag, 4); i += 4;
+    memcpy(&_companionOutFrame[i], &auth_code, 4); i += 4;
+    memcpy(&_companionOutFrame[i], path_hashes, path_len); i += path_len;
+    memcpy(&_companionOutFrame[i], path_snrs, snr_count); i += snr_count;
+    _companionOutFrame[i++] = (int8_t)(packet->getSNR() * 4);  // Final SNR to this node
+
+    _companionSerial->writeFrame(_companionOutFrame, i);
+    Serial.printf("[TRACE] Sent trace data to companion (%d bytes, %d hops)\n", i, snr_count);
+}
+
+// =============================================================================
+// OFFLINE MESSAGE QUEUE FOR COMPANION APP
+// =============================================================================
+
+void MeshBerryMesh::addToOfflineQueue(const uint8_t* frame, int len, bool isChannel) {
+    if (_offlineQueueLen >= OFFLINE_QUEUE_SIZE) {
+        // Queue full - drop oldest channel message to make room
+        for (int i = 0; i < _offlineQueueLen; i++) {
+            if (_offlineQueue[i].isChannel) {
+                // Remove this entry by shifting remaining entries down
+                for (int j = i; j < _offlineQueueLen - 1; j++) {
+                    _offlineQueue[j] = _offlineQueue[j + 1];
+                }
+                _offlineQueueLen--;
+                Serial.println("[QUEUE] Dropped oldest channel message");
+                break;
+            }
+        }
+        if (_offlineQueueLen >= OFFLINE_QUEUE_SIZE) {
+            Serial.println("[QUEUE] Queue full, dropping message");
+            return;  // Still full, drop new message
+        }
+    }
+    memcpy(_offlineQueue[_offlineQueueLen].buf, frame, len);
+    _offlineQueue[_offlineQueueLen].len = len;
+    _offlineQueue[_offlineQueueLen].isChannel = isChannel;
+    _offlineQueueLen++;
+    Serial.printf("[QUEUE] Added message to queue (%d bytes, %d total)\n", len, _offlineQueueLen);
+}
+
+int MeshBerryMesh::getFromOfflineQueue(uint8_t* frame) {
+    if (_offlineQueueLen <= 0) return 0;
+
+    // Take from top of queue (FIFO)
+    int len = _offlineQueue[0].len;
+    memcpy(frame, _offlineQueue[0].buf, len);
+
+    // Shift remaining entries down
+    _offlineQueueLen--;
+    for (int i = 0; i < _offlineQueueLen; i++) {
+        _offlineQueue[i] = _offlineQueue[i + 1];
+    }
+    return len;
 }
 
 // =============================================================================

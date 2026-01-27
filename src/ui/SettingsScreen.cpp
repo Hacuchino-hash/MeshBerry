@@ -13,9 +13,16 @@
 #include "../drivers/lora.h"
 #include "../drivers/gps.h"
 #include "../drivers/audio.h"
+#include "../drivers/ble.h"
+#include "../drivers/wifi.h"
+#include "../mesh/MeshBerryMesh.h"
+#include "ScreenManager.h"
 #include "../settings/SettingsManager.h"
 #include "../config.h"
 #include <stdio.h>
+
+// External mesh instance (defined in main.cpp)
+extern MeshBerryMesh* theMesh;
 
 SettingsScreen::SettingsScreen() {
     _listView.setBounds(0, Theme::CONTENT_Y, Theme::SCREEN_WIDTH, Theme::CONTENT_HEIGHT);
@@ -36,14 +43,15 @@ void SettingsScreen::onExit() {
 
 const char* SettingsScreen::getTitle() const {
     switch (_currentLevel) {
-        case SETTINGS_RADIO:   return "Radio Settings";
-        case SETTINGS_DISPLAY: return "Display";
-        case SETTINGS_NETWORK: return "Network";
-        case SETTINGS_GPS:     return "GPS Settings";
-        case SETTINGS_POWER:   return "Sleep Mode";
-        case SETTINGS_AUDIO:   return "Audio";
-        case SETTINGS_ABOUT:   return "About";
-        default:               return "Settings";
+        case SETTINGS_RADIO:    return "Radio Settings";
+        case SETTINGS_DISPLAY:  return "Display";
+        case SETTINGS_NETWORK:  return "Network";
+        case SETTINGS_GPS:      return "GPS Settings";
+        case SETTINGS_POWER:    return "Sleep Mode";
+        case SETTINGS_AUDIO:    return "Audio";
+        case SETTINGS_WIRELESS: return "Wireless";
+        case SETTINGS_ABOUT:    return "About";
+        default:                return "Settings";
     }
 }
 
@@ -52,7 +60,8 @@ void SettingsScreen::configureSoftKeys() {
         SoftKeyBar::setLabels("<", "OK", ">");
     } else if (_currentLevel == SETTINGS_MAIN) {
         SoftKeyBar::setLabels(nullptr, "Select", "Back");
-    } else if (_currentLevel == SETTINGS_GPS || _currentLevel == SETTINGS_POWER || _currentLevel == SETTINGS_AUDIO) {
+    } else if (_currentLevel == SETTINGS_GPS || _currentLevel == SETTINGS_POWER ||
+               _currentLevel == SETTINGS_AUDIO || _currentLevel == SETTINGS_WIRELESS) {
         SoftKeyBar::setLabels(nullptr, "Toggle", "Back");
     } else {
         SoftKeyBar::setLabels(nullptr, "Edit", "Back");
@@ -75,8 +84,9 @@ void SettingsScreen::buildMenu() {
             _menuItems[4] = { "GPS", "Power, RTC sync options", Icons::GPS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[5] = { "Power", "Sleep timeout, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
             _menuItems[6] = { "Audio", "Volume, notification tones", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[7] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItemCount = 8;
+            _menuItems[7] = { "Wireless", "Bluetooth, WiFi", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[8] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItemCount = 9;
             break;
 
         case SETTINGS_RADIO:
@@ -222,6 +232,64 @@ void SettingsScreen::buildMenu() {
                               false, 0, nullptr };
 
             _menuItemCount = 7;
+            break;
+        }
+
+        case SETTINGS_WIRELESS: {
+            // Wireless settings (Bluetooth and WiFi)
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+
+            // Bluetooth toggle
+            _menuItems[0] = { "Bluetooth",
+                              device.bleEnabled ? "On" : "Off",
+                              nullptr,
+                              device.bleEnabled ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            // BLE connection status (read-only)
+            const char* bleStatus = "Not Connected";
+            if (device.bleEnabled && BLE::isConnected()) {
+                bleStatus = "Connected";
+            } else if (device.bleEnabled && BLE::isEnabled()) {
+                bleStatus = "Advertising";
+            }
+            _menuItems[1] = { "BLE Status",
+                              bleStatus,
+                              nullptr,
+                              BLE::isConnected() ? Theme::GREEN : Theme::TEXT_SECONDARY,
+                              false, 0, nullptr };
+
+            // BLE PIN display
+            snprintf(_valueStrings[2], 32, "%06lu", device.blePin);
+            _menuItems[2] = { "BLE PIN",
+                              _valueStrings[2],
+                              nullptr,
+                              Theme::ACCENT,
+                              false, 0, nullptr };
+
+            // WiFi toggle
+            _menuItems[3] = { "WiFi",
+                              device.wifiEnabled ? "On" : "Off",
+                              nullptr,
+                              device.wifiEnabled ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            // WiFi SSID (read-only, show "Not Set" if empty)
+            const char* ssidDisplay = device.wifiSSID[0] ? device.wifiSSID : "Not Set";
+            _menuItems[4] = { "WiFi Network",
+                              ssidDisplay,
+                              nullptr,
+                              Theme::TEXT_SECONDARY,
+                              false, 0, nullptr };
+
+            // NTP time sync toggle
+            _menuItems[5] = { "NTP Time Sync",
+                              device.ntpEnabled ? "On" : "Off",
+                              nullptr,
+                              device.ntpEnabled ? Theme::GREEN : Theme::GRAY_LIGHT,
+                              false, 0, nullptr };
+
+            _menuItemCount = 6;
             break;
         }
 
@@ -467,7 +535,8 @@ void SettingsScreen::onItemSelected(int index) {
                 case 4: _currentLevel = SETTINGS_GPS; break;
                 case 5: _currentLevel = SETTINGS_POWER; break;
                 case 6: _currentLevel = SETTINGS_AUDIO; break;
-                case 7: _currentLevel = SETTINGS_ABOUT; break;
+                case 7: _currentLevel = SETTINGS_WIRELESS; break;
+                case 8: _currentLevel = SETTINGS_ABOUT; break;
             }
             buildMenu();
             configureSoftKeys();
@@ -575,6 +644,57 @@ void SettingsScreen::onItemSelected(int index) {
                 case 6:  // Error Tone
                     device.toneError = cycleAlertTone(device.toneError);
                     Audio::playAlertTone(device.toneError);  // Preview
+                    break;
+            }
+            SettingsManager::saveDeviceSettings();
+            buildMenu();
+            requestRedraw();
+            break;
+        }
+
+        case SETTINGS_WIRELESS: {
+            // Toggle wireless settings
+            DeviceSettings& device = SettingsManager::getDeviceSettings();
+            switch (index) {
+                case 0:  // Bluetooth toggle
+                    device.bleEnabled = !device.bleEnabled;
+                    if (device.bleEnabled) {
+                        // Build BLE device name using mesh node name
+                        char bleName[48];
+                        const char* nodeName = theMesh ? theMesh->getNodeName() : "Node";
+                        snprintf(bleName, sizeof(bleName), "MeshBerry-%s", nodeName);
+                        BLE::init(bleName, device.blePin);
+                        BLE::enable();
+                        // Start companion interface so mesh can receive BLE frames
+                        if (theMesh) {
+                            theMesh->startCompanionInterface(BLE::getInterface());
+                        }
+                    } else {
+                        BLE::disable();
+                    }
+                    break;
+                case 1:  // BLE Status (read-only, no toggle)
+                    // No action
+                    break;
+                case 2:  // BLE PIN (read-only for now)
+                    // TODO: Could add PIN editing
+                    break;
+                case 3:  // WiFi toggle
+                    device.wifiEnabled = !device.wifiEnabled;
+                    if (device.wifiEnabled) {
+                        WiFiManager::init();
+                        if (device.wifiSSID[0]) {
+                            WiFiManager::connect(device.wifiSSID, device.wifiPassword);
+                        }
+                    } else {
+                        WiFiManager::disconnect();
+                    }
+                    break;
+                case 4:  // WiFi Network - navigate to WiFi config screen
+                    Screens.navigateTo(ScreenId::SETTINGS_WIFI);
+                    return;  // Don't save settings yet
+                case 5:  // NTP Time Sync toggle
+                    device.ntpEnabled = !device.ntpEnabled;
                     break;
             }
             SettingsManager::saveDeviceSettings();

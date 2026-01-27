@@ -23,6 +23,9 @@ int ContactSettings::addOrUpdateContact(const NodeInfo& node) {
         contact.lastRssi = node.rssi;
         contact.lastSnr = node.snr;
         contact.lastHeard = node.lastHeard;
+        contact.hasLocation = node.hasLocation;
+        contact.latitude = node.latitude;
+        contact.longitude = node.longitude;
         // Keep: favorite status, pubKey, savedPassword (preserved automatically)
         return existingIdx;
     }
@@ -54,6 +57,9 @@ int ContactSettings::addOrUpdateContact(const NodeInfo& node) {
         contact.lastRssi = node.rssi;
         contact.lastSnr = node.snr;
         contact.lastHeard = node.lastHeard;
+        contact.hasLocation = node.hasLocation;
+        contact.latitude = node.latitude;
+        contact.longitude = node.longitude;
         contact.isFavorite = false;
         contact.isActive = true;
         memset(contact.pubKey, 0, sizeof(contact.pubKey));  // Clear old pubKey
@@ -70,6 +76,9 @@ int ContactSettings::addOrUpdateContact(const NodeInfo& node) {
     contact.lastRssi = node.rssi;
     contact.lastSnr = node.snr;
     contact.lastHeard = node.lastHeard;
+    contact.hasLocation = node.hasLocation;
+    contact.latitude = node.latitude;
+    contact.longitude = node.longitude;
     contact.isFavorite = false;
     contact.isActive = true;
     memset(contact.pubKey, 0, sizeof(contact.pubKey));  // Initialize pubKey to zeros
@@ -99,6 +108,9 @@ int ContactSettings::addOrUpdateContact(const NodeInfo& node, const uint8_t* pub
             contact.lastRssi = node.rssi;
             contact.lastSnr = node.snr;
             contact.lastHeard = node.lastHeard;
+            contact.hasLocation = node.hasLocation;
+            contact.latitude = node.latitude;
+            contact.longitude = node.longitude;
             Serial.printf("[CONTACT] Updated existing contact by pubKey: %s (idx=%d)\n",
                           contact.name, existingIdx);
             return existingIdx;
@@ -196,6 +208,17 @@ int ContactSettings::findContactByPubKey(const uint8_t* pubKey) const {
     // Search for matching public key
     for (int i = 0; i < numContacts; i++) {
         if (contacts[i].isActive && memcmp(contacts[i].pubKey, pubKey, 32) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int ContactSettings::findContactByPubKeyPrefix(const uint8_t* prefix, int prefixLen) const {
+    if (!prefix || prefixLen <= 0 || prefixLen > 32) return -1;
+
+    for (int i = 0; i < numContacts; i++) {
+        if (contacts[i].isActive && memcmp(contacts[i].pubKey, prefix, prefixLen) == 0) {
             return i;
         }
     }

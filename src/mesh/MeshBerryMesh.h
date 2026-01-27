@@ -29,11 +29,13 @@
 #include <Mesh.h>
 #include <helpers/SimpleMeshTables.h>
 #include <helpers/StaticPoolPacketManager.h>
+#include <helpers/BaseSerialInterface.h>
 #include "../config.h"
 #include "../board/TDeckBoard.h"
 
 // Forward declarations
 class MeshBerryRadio;
+struct ContactEntry;
 
 /**
  * Arduino-compatible millisecond clock for MeshCore
@@ -266,6 +268,26 @@ public:
     bool hasPendingWork() const;
 
     // =========================================================================
+    // COMPANION INTERFACE (BLE/WiFi)
+    // =========================================================================
+
+    /**
+     * Start companion serial interface (BLE or WiFi)
+     * @param serial The serial interface to use (SerialBLEInterface or SerialWifiInterface)
+     */
+    void startCompanionInterface(BaseSerialInterface& serial);
+
+    /**
+     * Check and process companion interface (call in loop)
+     */
+    void checkCompanionInterface();
+
+    /**
+     * Check if companion interface is connected
+     */
+    bool isCompanionConnected() const;
+
+    // =========================================================================
     // REPEATER MANAGEMENT
     // =========================================================================
 
@@ -413,9 +435,39 @@ protected:
     bool onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* path, uint8_t path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) override;
     void onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender_idx, const uint8_t* secret, uint8_t* data, size_t len) override;
 
+    // Trace route handling
+    void onTraceRecv(mesh::Packet* packet, uint32_t tag, uint32_t auth_code, uint8_t flags,
+                     const uint8_t* path_snrs, const uint8_t* path_hashes, uint8_t path_len) override;
+
 private:
     char _nodeName[32];
     ArduinoMillisClock _msClock;
+
+    // Companion interface (BLE/WiFi)
+    BaseSerialInterface* _companionSerial = nullptr;
+    uint8_t _companionFrame[MAX_FRAME_SIZE + 1];  // Buffer for incoming companion frames
+    uint8_t _companionOutFrame[MAX_FRAME_SIZE + 1];  // Buffer for outgoing companion frames
+
+    // Offline message queue for companion app
+    struct OfflineQueueEntry {
+        uint8_t buf[MAX_FRAME_SIZE];
+        uint8_t len;
+        bool isChannel;  // true for channel, false for DM
+    };
+    static constexpr int OFFLINE_QUEUE_SIZE = 16;
+    OfflineQueueEntry _offlineQueue[OFFLINE_QUEUE_SIZE];
+    int _offlineQueueLen = 0;
+
+    void addToOfflineQueue(const uint8_t* frame, int len, bool isChannel);
+    int getFromOfflineQueue(uint8_t* frame);
+
+    // Contact iterator state for BLE sync (prevents queue overflow)
+    bool _contactIterActive = false;
+    int _contactIterIndex = 0;
+
+    // Helper to handle companion command frame
+    void handleCompanionFrame(size_t len);
+    void writeContactFrame(const ContactEntry* contact);
 
     // Node tracking
     static const int MAX_TRACKED_NODES = MAX_NODES;

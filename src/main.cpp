@@ -43,6 +43,8 @@
 #include "drivers/audio.h"
 #include "drivers/power.h"
 #include "drivers/touch.h"
+#include "drivers/ble.h"
+#include "drivers/wifi.h"
 
 // MeshCore integration
 #include <RadioLib.h>
@@ -81,6 +83,7 @@
 #include "ui/RepeaterCLIScreen.h"
 #include "ui/DMChatScreen.h"
 #include "ui/DMSettingsScreen.h"
+#include "ui/WiFiScreen.h"
 #include "ui/BootLogo.h"
 
 // =============================================================================
@@ -108,6 +111,7 @@ uint32_t gpsBaudRate = 0;  // Detected GPS baud rate (9600 or 38400)
 static uint32_t lastAdvertTime = 0;
 static const uint32_t ADVERT_INTERVAL_MS = 300000;  // 5 minutes
 static bool rtcSyncedFromGps = false;  // Track if we've synced RTC from GPS
+static bool rtcSyncedFromNtp = false;  // Track if we've synced RTC from NTP
 
 // RTC memory for boot loop detection (survives reboots, reset on power loss)
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -142,6 +146,7 @@ static RepeaterCLIScreen _repeaterCLIScreen;  // Actual instance
 DMChatScreen dmChatScreen;  // Non-static - accessed by ContactsScreen
 DMSettingsScreen dmSettingsScreen;  // Non-static - accessed by DMChatScreen
 static AboutScreen aboutScreen;
+static WiFiScreen wifiScreen;
 EmojiPickerScreen emojiPickerScreen;  // Non-static - accessed by ChatScreen
 
 // CLI state
@@ -307,6 +312,29 @@ void setup() {
     Screens.setBatteryPercent(board.getBatteryPercent());
     Screens.setGpsStatus(gpsPresent, false);
 
+    // Initialize WiFi if enabled in settings
+    DeviceSettings& wifiSettings = SettingsManager::getDeviceSettings();
+    if (wifiSettings.wifiEnabled && wifiSettings.wifiSSID[0] != '\0') {
+        Serial.println("[INIT] WiFi enabled, attempting connection...");
+        WiFiManager::init();
+        if (WiFiManager::connect(wifiSettings.wifiSSID, wifiSettings.wifiPassword)) {
+            Serial.println("[INIT] WiFi connected");
+            // Attempt NTP time sync if enabled
+            if (wifiSettings.ntpEnabled && !rtcSyncedFromGps) {
+                if (WiFiManager::syncTime()) {
+                    uint32_t ntpTime = WiFiManager::getEpochTime();
+                    rtcClock.setCurrentTime(ntpTime);
+                    rtcSyncedFromNtp = true;
+                    Serial.printf("[RTC] Synced from NTP: %u\n", ntpTime);
+                }
+            }
+        } else {
+            Serial.println("[INIT] WiFi connection failed");
+        }
+    } else {
+        Serial.println("[INIT] WiFi disabled or no SSID configured");
+    }
+
     // Initialize power FSM activity timer (handled by Power::init())
 
     // Navigate to home screen
@@ -369,6 +397,9 @@ void loop() {
             lastAdvertTime = now;
         }
     }
+
+    // Process BLE companion interface (handles connection state updates)
+    BLE::loop();
 
     // Update GPS and status bar fix indicator
     if (gpsPresent) {
@@ -732,6 +763,24 @@ bool initMesh() {
     theMesh->sendAdvertisement();
     lastAdvertTime = millis();
 
+    // Initialize BLE if enabled in settings
+    DeviceSettings& deviceSettings = SettingsManager::getDeviceSettings();
+    if (deviceSettings.bleEnabled) {
+        // Build BLE device name: "MeshBerry-<nodename>"
+        char bleName[48];
+        snprintf(bleName, sizeof(bleName), "MeshBerry-%s", theMesh->getNodeName());
+
+        // Initialize BLE with device name and PIN
+        BLE::init(bleName, deviceSettings.blePin);
+        BLE::enable();
+
+        // Start companion interface
+        theMesh->startCompanionInterface(BLE::getInterface());
+        Serial.println("[INIT] BLE companion interface enabled");
+    } else {
+        Serial.println("[INIT] BLE disabled in settings");
+    }
+
     Serial.println("[INIT] Mesh: OK");
     return true;
 }
@@ -797,6 +846,7 @@ void initUI() {
     Screens.registerScreen(&repeaterAdminScreen);
     Screens.registerScreen(&_repeaterCLIScreen);
     Screens.registerScreen(&aboutScreen);
+    Screens.registerScreen(&wifiScreen);
     Screens.registerScreen(&emojiPickerScreen);
 
     // Note: repeaterAdminScreen.setMesh() is called after initMesh() in setup()

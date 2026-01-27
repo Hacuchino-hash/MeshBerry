@@ -75,6 +75,7 @@ enum class ScreenId {
     SETTINGS_RADIO,
     SETTINGS_DISPLAY,
     SETTINGS_NETWORK,
+    SETTINGS_WIFI,  // WiFi configuration screen
     STATUS,
     CHANNELS,
     GPS,
