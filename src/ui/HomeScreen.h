@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 NodakMesh (nodakmesh.org)
  *
- * Modern Apple-inspired home screen with icon grid
+ * BlackBerry-inspired home screen with background image and bottom dock
  */
 
 #ifndef MESHBERRY_HOMESCREEN_H
@@ -14,22 +14,20 @@
 #include "ScreenManager.h"
 
 /**
- * Home screen menu items
- * Note: Channels moved to Messages screen (channels are group chats)
- * Note: Repeaters removed - ContactsScreen now has separate sections
+ * Home screen dock items (4 icons at bottom)
  */
 enum HomeMenuItem {
     HOME_MESSAGES = 0,
     HOME_CONTACTS,
     HOME_SETTINGS,
-    HOME_STATUS,
-    HOME_GPS,
-    HOME_ABOUT,
-    HOME_ITEM_COUNT  // Now 6 items (3x2 grid)
+    HOME_MAP,       // Placeholder for future map feature
+    HOME_ITEM_COUNT
 };
 
+constexpr int DOCK_ITEM_COUNT = HOME_ITEM_COUNT;
+
 /**
- * Home Screen - Main navigation hub
+ * Home Screen - Background image with bottom dock, no soft keys
  */
 class HomeScreen : public Screen {
 public:
@@ -43,46 +41,33 @@ public:
     void draw(bool fullRedraw) override;
     bool handleInput(const InputData& input) override;
     void update(uint32_t deltaMs) override;
-    const char* getTitle() const override { return nullptr; }  // No title on home
+    const char* getTitle() const override { return nullptr; }
     void configureSoftKeys() override;
 
-    /**
-     * Set notification badge for a menu item
-     * @param item Which menu item
-     * @param count Badge count (0 to hide)
-     */
     void setBadge(HomeMenuItem item, uint8_t count);
-
-    /**
-     * Get current selected item
-     */
     HomeMenuItem getSelectedItem() const { return _selectedItem; }
 
 private:
-    // Draw a single tile
-    void drawTile(int index, bool selected);
+    // Drawing helpers
+    void drawBackground();
+    void drawDock(bool fullRedraw);
+    void drawDockItem(int dockIndex, bool selected);
 
     // Get screen ID for menu item
     ScreenId getScreenForItem(HomeMenuItem item) const;
 
-    // Grid navigation (3x2 grid)
-    int getRow(int index) const { return index / 3; }
-    int getCol(int index) const { return index % 3; }
-    int getIndex(int row, int col) const { return row * 3 + col; }
-
     // State
     HomeMenuItem _selectedItem = HOME_MESSAGES;
-    HomeMenuItem _prevSelectedItem = HOME_MESSAGES;  // Track for partial redraws
+    HomeMenuItem _prevSelectedItem = HOME_MESSAGES;
     uint8_t _badges[HOME_ITEM_COUNT] = { 0 };
 
-    // Layout (3x2 grid with modern spacing)
-    static constexpr int COLS = 3;
-    static constexpr int ROWS = 2;
-    static constexpr int16_t TILE_WIDTH = 96;
-    static constexpr int16_t TILE_HEIGHT = 80;
-    static constexpr int16_t TILE_MARGIN = 8;    // More breathing room
-    static constexpr int16_t GRID_START_X = 8;   // Centered horizontally
-    static constexpr int16_t GRID_START_Y = Theme::CONTENT_Y + 8;
+    // Dock replaces soft key bar at very bottom
+    static constexpr int16_t DOCK_HEIGHT = Theme::SOFTKEY_BAR_HEIGHT;  // 30px
+    static constexpr int16_t DOCK_Y = Theme::SOFTKEY_BAR_Y;            // 210
+
+    // Background image area (from status bar to dock)
+    static constexpr int16_t BG_START_Y = Theme::STATUS_BAR_HEIGHT;    // 20
+    static constexpr int16_t BG_HEIGHT = DOCK_Y - BG_START_Y;          // 210 - 20 = 190
 };
 
 #endif // MESHBERRY_HOMESCREEN_H

@@ -68,14 +68,15 @@ void SettingsScreen::buildMenu() {
     switch (_currentLevel) {
         case SETTINGS_MAIN:
             // Main settings menu
-            _menuItems[0] = { "Radio", "Frequency, power, spreading", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[1] = { "Display", "Brightness, timeout", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[2] = { "Network", "Node name, forwarding", Icons::CONTACTS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[3] = { "GPS", "Power, RTC sync options", Icons::GPS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[4] = { "Power", "Sleep timeout, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[5] = { "Audio", "Volume, notification tones", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItems[6] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
-            _menuItemCount = 7;
+            _menuItems[0] = { "Status", "Node info, connections", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[1] = { "Radio", "Frequency, power, spreading", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[2] = { "Display", "Brightness, timeout", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[3] = { "Network", "Node name, forwarding", Icons::CONTACTS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[4] = { "GPS", "Power, RTC sync options", Icons::GPS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[5] = { "Power", "Sleep timeout, wake sources", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[6] = { "Audio", "Volume, notification tones", Icons::SETTINGS_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItems[7] = { "About", "Version, licenses", Icons::INFO_ICON, Theme::ACCENT, false, 0, nullptr };
+            _menuItemCount = 8;
             break;
 
         case SETTINGS_RADIO:
@@ -457,13 +458,16 @@ void SettingsScreen::onItemSelected(int index) {
     switch (_currentLevel) {
         case SETTINGS_MAIN:
             switch (index) {
-                case 0: _currentLevel = SETTINGS_RADIO; break;
-                case 1: _currentLevel = SETTINGS_DISPLAY; break;
-                case 2: _currentLevel = SETTINGS_NETWORK; break;
-                case 3: _currentLevel = SETTINGS_GPS; break;
-                case 4: _currentLevel = SETTINGS_POWER; break;
-                case 5: _currentLevel = SETTINGS_AUDIO; break;
-                case 6: _currentLevel = SETTINGS_ABOUT; break;
+                case 0:  // Status - navigate to Status screen
+                    Screens.navigateTo(ScreenId::STATUS);
+                    return;
+                case 1: _currentLevel = SETTINGS_RADIO; break;
+                case 2: _currentLevel = SETTINGS_DISPLAY; break;
+                case 3: _currentLevel = SETTINGS_NETWORK; break;
+                case 4: _currentLevel = SETTINGS_GPS; break;
+                case 5: _currentLevel = SETTINGS_POWER; break;
+                case 6: _currentLevel = SETTINGS_AUDIO; break;
+                case 7: _currentLevel = SETTINGS_ABOUT; break;
             }
             buildMenu();
             configureSoftKeys();

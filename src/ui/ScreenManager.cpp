@@ -6,6 +6,7 @@
  */
 
 #include "ScreenManager.h"
+#include "Theme.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 
@@ -81,6 +82,9 @@ void ScreenManager::navigateTo(ScreenId id, bool pushToStack) {
         _currentScreen->onExit();
     }
 
+    // Clear entire display to prevent ghosting artifacts
+    Display::clear(Theme::BG_PRIMARY);
+
     // Switch to new screen
     _currentScreen = newScreen;
     _currentScreen->onEnter();
@@ -107,6 +111,9 @@ bool ScreenManager::goBack() {
     if (_currentScreen) {
         _currentScreen->onExit();
     }
+
+    // Clear entire display to prevent ghosting artifacts
+    Display::clear(Theme::BG_PRIMARY);
 
     // Switch to previous screen
     _currentScreen = prevScreen;
@@ -281,11 +288,13 @@ void ScreenManager::drawScreen(bool fullRedraw) {
         _currentScreen->clearRedrawFlag();
     }
 
-    // Draw soft key bar
-    if (fullRedraw) {
-        SoftKeyBar::redraw();
-    } else {
-        SoftKeyBar::draw();
+    // Draw soft key bar (skip on home screen - it has its own dock)
+    if (_currentScreen && _currentScreen->getId() != ScreenId::HOME) {
+        if (fullRedraw) {
+            SoftKeyBar::redraw();
+        } else {
+            SoftKeyBar::draw();
+        }
     }
 }
 

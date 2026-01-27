@@ -195,7 +195,7 @@ void DMChatScreen::drawMessages(bool fullRedraw) {
         uint16_t textColor = Theme::TEXT_PRIMARY;
 
         if (msg->isOutgoing) {
-            // Outgoing: right-aligned, teal bubble (or red if failed)
+            // Outgoing: right-aligned, BB blue bubble (or red if failed)
             bubbleX = Theme::SCREEN_WIDTH - bubbleWidth - bubbleMargin;
             if (msg->status == DM_STATUS_FAILED) {
                 bubbleColor = Theme::ERROR;

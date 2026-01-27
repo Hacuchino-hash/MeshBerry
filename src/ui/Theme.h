@@ -15,34 +15,34 @@
 namespace Theme {
 
 // =============================================================================
-// MODERN APPLE-INSPIRED COLOR PALETTE (RGB565)
+// MESHBERRY COLOR PALETTE (RGB565)
 // =============================================================================
 
-// Background colors - soft dark mode (not pure black)
-constexpr uint16_t BG_DARK      = 0x18E3;  // #1C1C1E - Apple dark mode base
-constexpr uint16_t BG_ELEVATED  = 0x2945;  // #2C2C2E - Elevated surfaces (cards, tiles)
-constexpr uint16_t BG_TERTIARY  = 0x39C7;  // #3A3A3C - Tertiary backgrounds
+// Background colors - near-black for high contrast
+constexpr uint16_t BG_DARK      = 0x0841;  // #080808 - Near black (primary)
+constexpr uint16_t BG_ELEVATED  = 0x1082;  // #101010 - Slightly elevated (cards, tiles)
+constexpr uint16_t BG_TERTIARY  = 0x18E3;  // #1C1C1E - Tertiary (incoming bubbles)
 
 // Legacy aliases (for compatibility)
-constexpr uint16_t BLACK        = BG_DARK;      // Use dark gray instead of pure black
+constexpr uint16_t BLACK        = BG_DARK;      // Near black
 constexpr uint16_t WHITE        = 0xFFFF;       // Primary text
 
-// Accent colors - modern teal (communicates connectivity)
-constexpr uint16_t ACCENT_PRIMARY   = 0x07FF;   // #00BCD4 - Teal (primary actions)
-constexpr uint16_t ACCENT_LIGHT     = 0x5FFF;   // #5DD3E8 - Light teal (highlights)
-constexpr uint16_t ACCENT_PRESSED   = 0x0599;   // #0097A7 - Darker teal (pressed states)
+// Accent colors - BlackBerry Orient Blue
+constexpr uint16_t ACCENT_PRIMARY   = 0x0290;   // #005387 - BB Orient Blue
+constexpr uint16_t ACCENT_LIGHT     = 0x3B5F;   // #3A7BB0 - Light blue
+constexpr uint16_t ACCENT_PRESSED   = 0x0188;   // #003050 - Dark blue (pressed)
 
 // Legacy blue aliases (for compatibility)
 constexpr uint16_t BLUE         = ACCENT_PRIMARY;
 constexpr uint16_t BLUE_LIGHT   = ACCENT_LIGHT;
 constexpr uint16_t BLUE_DARK    = ACCENT_PRESSED;
 
-// Grayscale - refined for modern look
+// Grayscale - refined for high contrast
 constexpr uint16_t GRAY_DARKEST = BG_ELEVATED;  // Card backgrounds
 constexpr uint16_t GRAY_DARK    = BG_TERTIARY;  // Secondary backgrounds
 constexpr uint16_t GRAY_MID     = 0x4A49;       // #4A4A4C - Borders, dividers
-constexpr uint16_t GRAY_LIGHT   = 0x9CF3;       // #9E9E9E - Secondary text
-constexpr uint16_t GRAY_LIGHTER = 0xCE79;       // #CCCCCC - Subtle highlights
+constexpr uint16_t GRAY_LIGHT   = 0xB5B6;       // #B0B0B0 - Secondary text (brighter)
+constexpr uint16_t GRAY_LIGHTER = 0xDEDB;       // #DDDDDD - Subtle highlights
 
 // Status colors - softer, more refined
 constexpr uint16_t GREEN        = 0x2DC9;       // #2ECC71 - Soft green (success)
@@ -58,16 +58,16 @@ constexpr uint16_t BG_SECONDARY = BG_ELEVATED;
 constexpr uint16_t BG_CARD      = BG_ELEVATED;
 constexpr uint16_t TEXT_PRIMARY = WHITE;
 constexpr uint16_t TEXT_SECONDARY = GRAY_LIGHT;
-constexpr uint16_t TEXT_DISABLED = 0x632C;      // #636366 - Disabled text
+constexpr uint16_t TEXT_DISABLED = 0x7BCF;      // #7A7A7A - Disabled (brighter)
 constexpr uint16_t ACCENT       = ACCENT_PRIMARY;
 constexpr uint16_t FOCUS        = ACCENT_LIGHT;
-constexpr uint16_t DIVIDER      = 0x39C7;       // Subtle divider (same as BG_TERTIARY)
+constexpr uint16_t DIVIDER      = 0x2104;       // #202020 - Subtle divider
 constexpr uint16_t SUCCESS      = GREEN;
 constexpr uint16_t ERROR        = RED;
 constexpr uint16_t WARNING      = YELLOW;
 
 // Chat bubble colors
-constexpr uint16_t BUBBLE_OUTGOING = ACCENT_PRIMARY;  // Teal for sent messages
+constexpr uint16_t BUBBLE_OUTGOING = ACCENT_PRIMARY;  // BB Blue for sent messages
 constexpr uint16_t BUBBLE_INCOMING = BG_TERTIARY;     // Gray for received messages
 
 // =============================================================================

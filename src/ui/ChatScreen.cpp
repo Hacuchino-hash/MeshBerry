@@ -184,7 +184,7 @@ void ChatScreen::drawMessages(bool fullRedraw) {
         uint16_t textColor;
 
         if (msg.isOutgoing) {
-            // Outgoing: right-aligned, teal bubble
+            // Outgoing: right-aligned, BB blue bubble
             bubbleX = Theme::SCREEN_WIDTH - bubbleWidth - bubbleMargin;
             bubbleColor = Theme::BUBBLE_OUTGOING;
             textColor = Theme::WHITE;
